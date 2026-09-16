@@ -32,7 +32,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         lbmMethod: 'waist' as LbmMethod,
         waistCm: 100,
         dexaLbmKg: 75,
-        dailyDoseMcg: 100,
+        dailyDoseMcg: 0,
         tshMeasured: 5.2,
         freeT4: 1.1,
         freeT3: 4.2,
@@ -45,7 +45,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
 
     const currentSnapshot = JSON.stringify({ patient, history })
     const isUpToDate = savedRuns.length > 0 && lastCalculatedSnapshot === currentSnapshot
-
     const existingRecordForDate = history.find((r) => r.date === newEntry.date)
 
     useEffect(() => {
@@ -147,6 +146,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
+        // Explicitly nullify unused method fields when toggling between DEXA and Waist
         const recordPayload = {
             user_id: user.id,
             date: newEntry.date,
@@ -227,7 +227,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         setNewEntry({
             date: record.date,
             weightKg: record.weightKg,
-            lbmMethod: record.lbmMethod,
+            lbmMethod: record.lbmMethod || 'waist',
             waistCm: record.waistCm || 100,
             dexaLbmKg: record.dexaLbmKg || 75,
             dailyDoseMcg: record.dailyDoseMcg,
@@ -237,7 +237,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             antiTpo: record.antiTpo || 0,
             antiTg: record.antiTg || 0,
         })
-        // Switch to active tab form view if needed
         window.scrollTo({ top: 0, behavior: 'smooth' })
     }
 
@@ -257,13 +256,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             const res = calculateMapDose(patient, history)
             setResult(res)
 
-            // Target evaluation date is the latest date in history
             const latestLogDate = history[history.length - 1].date
             const noteWithDate = `[Log Date: ${latestLogDate}] ${res.calculationNote}`
 
             const { data: { user } } = await supabase.auth.getUser()
             if (user) {
-                // Look for an existing optimization run associated with this specific log date
                 const existingRunForDate = savedRuns.find((run) =>
                     run.calculationNote.includes(`[Log Date: ${latestLogDate}]`)
                 )
@@ -279,7 +276,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 }
 
                 if (existingRunForDate) {
-                    // Update existing run for this date
                     const { data: updatedRun } = await supabase
                         .from('optimization_runs')
                         .update(runPayload)
@@ -305,7 +301,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         )
                     }
                 } else {
-                    // Insert a new run for a new log date
                     const { data: newRun } = await supabase
                         .from('optimization_runs')
                         .insert(runPayload)
@@ -334,7 +329,16 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         }
     }
 
-    const handleDeleteRun = async (id: string) => {
+    const handleDeleteRun = async (id: string, note: string) => {
+        const logDateMatch = note.match(/\[Log Date: ([\d-]+)\]/)
+        const associatedLogDate = logDateMatch ? logDateMatch[1] : null
+        const isLogActive = associatedLogDate ? history.some((r) => r.date === associatedLogDate) : false
+
+        if (isLogActive) {
+            alert(`Cannot delete optimization run for ${associatedLogDate} while its corresponding lab entry remains in history. Delete or modify the lab record first.`)
+            return
+        }
+
         await supabase.from('optimization_runs').delete().eq('id', id)
         const updatedRuns = savedRuns.filter((r) => r.id !== id)
         setSavedRuns(updatedRuns)
@@ -344,7 +348,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     }
 
     if (loading) {
-        return <div className="text-center p-10 text-emerald-400">Loading Patient Records...</div>
+        return <div className="text-center p-10 text-emerald-400 font-mono">Loading Workspace & Patient Profile...</div>
     }
 
     return (
@@ -687,7 +691,12 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                     {result && (
                         <div className="border border-emerald-500/30 bg-emerald-950/20 rounded-xl p-6 space-y-5">
                             <div className="flex justify-between items-start">
-                                <h2 className="text-xl font-bold text-emerald-400">Latest Optimization Result</h2>
+                                <div>
+                                    <h2 className="text-xl font-bold text-emerald-400">Latest Optimization Result</h2>
+                                    <p className="text-xs text-emerald-300/80 font-mono mt-0.5">
+                                        * Projected TSH represents expected steady-state 6–8 weeks post-titration.
+                                    </p>
+                                </div>
                                 <span className="text-xs bg-emerald-950 border border-emerald-800 text-emerald-300 px-2.5 py-1 rounded-full font-mono">
                                     {result.calculationNote}
                                 </span>
@@ -708,9 +717,18 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                     <div className="text-xl font-bold text-white">{result.individualClearance} L/day</div>
                                 </div>
                                 <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                                    <div className="text-xs text-gray-400">Predicted TSH</div>
+                                    <div className="text-xs text-gray-400">Predicted TSH (6-8 wks)</div>
                                     <div className="text-xl font-bold text-white">{result.predictedTsh} uIU/mL</div>
                                 </div>
+                            </div>
+
+                            <div className="p-4 bg-gray-950 border border-gray-800 rounded-lg text-xs space-y-2 text-gray-300">
+                                <strong className="text-emerald-300 block">Model Assumptions & Pharmacokinetic Notes:</strong>
+                                <ul className="list-disc list-inside space-y-1 text-gray-400">
+                                    <li><strong>Elimination Half-Life (t½):</strong> Levothyroxine requires ~6 to 8 weeks (4–5 elimination half-lives) to reach true thermodynamic steady-state.</li>
+                                    <li><strong>LBM Scaling:</strong> Peripheral volume of distribution and metabolic clearance rate scale strictly to Lean Body Mass rather than total body weight.</li>
+                                    <li><strong>Pituitary Axis:</strong> TSH feedback follows an inverse log-linear response relative to bioavailable steady-state T4.</li>
+                                </ul>
                             </div>
                         </div>
                     )}
@@ -721,27 +739,42 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                             <p className="text-xs text-gray-500">No saved optimization runs found in database.</p>
                         ) : (
                             <div className="space-y-2">
-                                {savedRuns.map((run) => (
-                                    <div key={run.id} className="bg-gray-950 p-3 rounded border border-gray-800 text-xs flex justify-between items-center">
-                                        <div>
-                                            <span className="text-gray-500 mr-2">{new Date(run.createdAt).toLocaleString()}</span>
-                                            Rec Dose: <strong className="text-emerald-400 text-sm">{run.recommendedDoseMcg} mcg</strong>
-                                            <span className="text-gray-600 mx-2">|</span>
-                                            LBM: <span className="text-gray-300">{run.estimatedLbmKg} kg</span>
-                                            <span className="text-gray-600 mx-2">|</span>
-                                            CL: <span className="text-gray-300">{run.estimatedClearance} L/d</span>
-                                            <span className="text-gray-600 mx-2">|</span>
-                                            Pred TSH: <span className="text-gray-300">{run.predictedTsh} uIU/mL</span>
-                                            <div className="text-[10px] text-emerald-400/80 mt-1 font-mono">{run.calculationNote}</div>
+                                {savedRuns.map((run) => {
+                                    const logDateMatch = run.calculationNote.match(/\[Log Date: ([\d-]+)\]/)
+                                    const associatedLogDate = logDateMatch ? logDateMatch[1] : null
+                                    const isLogActive = associatedLogDate ? history.some((r) => r.date === associatedLogDate) : false
+
+                                    return (
+                                        <div key={run.id} className="bg-gray-950 p-3 rounded border border-gray-800 text-xs flex justify-between items-center">
+                                            <div>
+                                                <span className="text-gray-500 mr-2">{new Date(run.createdAt).toLocaleString()}</span>
+                                                Rec Dose: <strong className="text-emerald-400 text-sm">{run.recommendedDoseMcg} mcg</strong>
+                                                <span className="text-gray-600 mx-2">|</span>
+                                                LBM: <span className="text-gray-300">{run.estimatedLbmKg} kg</span>
+                                                <span className="text-gray-600 mx-2">|</span>
+                                                CL: <span className="text-gray-300">{run.estimatedClearance} L/d</span>
+                                                <span className="text-gray-600 mx-2">|</span>
+                                                Pred TSH (6-8wks): <span className="text-gray-300">{run.predictedTsh} uIU/mL</span>
+                                                <div className="text-[10px] text-emerald-400/80 mt-1 font-mono">{run.calculationNote}</div>
+                                            </div>
+
+                                            <div className="flex items-center gap-2 shrink-0">
+                                                {isLogActive ? (
+                                                    <span className="text-[10px] bg-gray-900 border border-gray-700 text-gray-400 px-2 py-1 rounded cursor-not-allowed">
+                                                        Locked (Log Active)
+                                                    </span>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => handleDeleteRun(run.id, run.calculationNote)}
+                                                        className="text-xs text-red-400 hover:text-red-300"
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                )}
+                                            </div>
                                         </div>
-                                        <button
-                                            onClick={() => handleDeleteRun(run.id)}
-                                            className="text-xs text-red-400 hover:text-red-300 ml-3"
-                                        >
-                                            Delete
-                                        </button>
-                                    </div>
-                                ))}
+                                    )
+                                })}
                             </div>
                         )}
                     </div>

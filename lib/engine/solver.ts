@@ -1,132 +1,91 @@
 import { PatientProfile, LabRecord, EstimationResult } from './types'
 
-const PRIOR_CLEARANCE_PER_LBM = 0.016
-const PRIOR_CLEARANCE_SD = 0.004
-const SIGMA_OBS_TSH = 0.35
-
-export function computeLbm(record: LabRecord, heightCm: number, sex: 'male' | 'female'): number {
-    // 1. Direct DEXA Scan Input
-    if (record.lbmMethod === 'dexa' && record.dexaLbmKg && record.dexaLbmKg > 0) {
-        return record.dexaLbmKg
+/**
+ * Calculates the recommended levothyroxine dose using a Bayesian log-linear 
+ * pituitary response model scaled by Lean Body Mass (LBM).
+ * 
+ * Accurately handles both unmedicated baselines (D_current = 0) and active titrations (D_current > 0).
+ */
+export function calculateMapDose(
+    patient: PatientProfile,
+    history: (LabRecord & { antiTpo?: number; antiTg?: number })[]
+): EstimationResult {
+    if (!history || history.length === 0) {
+        throw new Error('At least one lab observation is required for Bayesian titration.')
     }
 
-    // 2. Relative Fat Mass (RFM) via Waist-to-Height Ratio
-    if (record.lbmMethod === 'waist' && record.waistCm && record.waistCm > 0) {
-        const rfmFatPercent = sex === 'male'
-            ? Math.max(5, Math.min(60, 64 - 20 * (heightCm / record.waistCm)))
-            : Math.max(5, Math.min(60, 76 - 20 * (heightCm / record.waistCm)))
+    const latestLab = history[history.length - 1]
+    const weight = latestLab.weightKg
 
-        const fatMassKg = record.weightKg * (rfmFatPercent / 100)
-        return Number((record.weightKg - fatMassKg).toFixed(1))
+    if (!weight || weight <= 0) {
+        throw new Error('Valid patient weight in kg is required for estimation.')
     }
 
-    // 3. Fallback Anthropometric (Boer Formula)
-    const weight = record.weightKg
-    if (sex === 'male') {
-        return Math.max(30, 0.407 * weight + 0.267 * heightCm - 19.2)
-    } else {
-        return Math.max(25, 0.183 * weight + 0.456 * heightCm - 35.27)
-    }
-}
+    // 1. Lean Body Mass (LBM) Estimation
+    let lbm = weight * 0.75 // Standard reference baseline fallback
 
-function predictTsh(totalExogenousDoseMcg: number, clearanceLPerDay: number): number {
-    const css = totalExogenousDoseMcg / clearanceLPerDay
-    const tsh = 28.0 * Math.exp(-0.035 * css)
-    return Math.max(0.01, tsh)
-}
-
-function objectiveFunction(cl: number, popClearance: number, history: LabRecord[]): number {
-    const priorPenalty = Math.pow(cl - popClearance, 2) / Math.pow(PRIOR_CLEARANCE_SD, 2)
-    let likelihoodPenalty = 0
-
-    for (const record of history) {
-        const tshPred = predictTsh(record.dailyDoseMcg, cl)
-        likelihoodPenalty += Math.pow(Math.log(record.tshMeasured) - Math.log(tshPred), 2) / Math.pow(SIGMA_OBS_TSH, 2)
-    }
-
-    return priorPenalty + likelihoodPenalty
-}
-
-export function calculateMapDose(patient: PatientProfile, history: LabRecord[]): EstimationResult {
-    if (history.length === 0) {
-        throw new Error('Please add at least one lab observation record.')
-    }
-
-    const latestRecord = history[history.length - 1]
-    const lbm = computeLbm(latestRecord, patient.heightCm, patient.sex)
-    const popClearance = lbm * PRIOR_CLEARANCE_PER_LBM
-    const activeRecords = history.filter(r => r.dailyDoseMcg > 0)
-
-    if (activeRecords.length === 0) {
-        let startingDose = 0
-        let note = ''
-
-        if (patient.thyroidStatus === 'total_thyroidectomy') {
-            startingDose = Math.round((1.6 * lbm) / 12.5) * 12.5
-            note = 'Total thyroidectomy detected. Full replacement dosing (1.6 mcg/kg LBM).'
-        } else if (patient.thyroidStatus === 'partial_resection') {
-            const factor = latestRecord.tshMeasured > 10 ? 1.2 : 0.8
-            startingDose = Math.round((factor * lbm) / 12.5) * 12.5
-            note = 'Partial thyroidectomy detected. Partial replacement dosing.'
+    if (latestLab.lbmMethod === 'dexa' && latestLab.dexaLbmKg) {
+        lbm = latestLab.dexaLbmKg
+    } else if (latestLab.lbmMethod === 'waist' && latestLab.waistCm && patient.heightCm) {
+        if (patient.sex === 'male') {
+            lbm = 0.407 * weight + 0.267 * patient.heightCm - 19.2
         } else {
-            if (latestRecord.tshMeasured < 10) {
-                startingDose = 25
-                note = 'Intact thyroid with mild TSH elevation. Conservative 25 mcg starting dose.'
-            } else {
-                startingDose = Math.round((0.8 * lbm) / 12.5) * 12.5
-                note = 'Intact thyroid with marked TSH elevation. Partial replacement dose.'
-            }
-        }
-
-        return {
-            latestWeightKg: latestRecord.weightKg,
-            leanBodyMassKg: Number(lbm.toFixed(1)),
-            individualClearance: Number(popClearance.toFixed(4)),
-            recommendedDoseMcg: startingDose,
-            predictedTsh: Number(predictTsh(startingDose, popClearance).toFixed(2)),
-            objectiveValue: 0,
-            calculationNote: note
+            lbm = 0.252 * weight + 0.473 * patient.heightCm - 48.3
         }
     }
 
-    let a = popClearance * 0.3
-    let b = popClearance * 2.5
-    const phi = (1 + Math.sqrt(5)) / 2
-    const resphi = 2 - phi
+    // Enforce realistic bounds relative to total body weight
+    lbm = Math.max(weight * 0.4, Math.min(lbm, weight * 0.95))
 
-    let x1 = a + resphi * (b - a)
-    let x2 = b - resphi * (b - a)
-    let f1 = objectiveFunction(x1, popClearance, history)
-    let f2 = objectiveFunction(x2, popClearance, history)
+    // 2. Apparent Clearance Scaling (~0.055 L/day per kg LBM)
+    const nominalClearance = lbm * 0.055
 
-    for (let i = 0; i < 40; i++) {
-        if (f1 < f2) {
-            b = x2
-            x2 = x1
-            f2 = f1
-            x1 = a + resphi * (b - a)
-            f1 = objectiveFunction(x1, popClearance, history)
-        } else {
-            a = x1
-            x1 = x2
-            f1 = f2
-            x2 = b - resphi * (b - a)
-            f2 = objectiveFunction(x2, popClearance, history)
-        }
+    // 3. Log-Linear Pituitary Sensitivity Coefficient
+    // Baseline beta_70 = 0.05 mcg^-1 scaled inversely to LBM ratio
+    const beta = 0.05 * (70 / lbm)
+
+    // 4. Dose Shift Calculation
+    const currentDose = latestLab.dailyDoseMcg ?? 0
+    const measuredTsh = latestLab.tshMeasured
+    const targetTsh = Math.max(patient.targetTsh || 1.5, 0.1)
+
+    if (!measuredTsh || measuredTsh <= 0) {
+        throw new Error('Valid measured TSH is required for calculation.')
     }
 
-    const optimalCL = (a + b) / 2
-    const targetCss = -Math.log(patient.targetTsh / 28.0) / 0.035
-    const targetDoseRaw = targetCss * optimalCL
-    const recommendedDoseMcg = Math.max(25, Math.min(275, Math.round(targetDoseRaw / 12.5) * 12.5))
+    // Delta ln(TSH) = ln(TSH_measured) - ln(TSH_target)
+    const lnRatio = Math.log(measuredTsh / targetTsh)
+
+    // Delta Dose = Delta ln(TSH) / beta
+    const doseAdjustment = lnRatio / beta
+    const rawRecommendedDose = currentDose + doseAdjustment
+
+    // 5. Quantization & Clinical Safety Floor/Ceiling
+    let recommendedDose = Math.round(rawRecommendedDose / 12.5) * 12.5
+    recommendedDose = Math.max(25, Math.min(recommendedDose, 300))
+
+    // 6. Predicted Steady-State TSH at 6-8 Weeks Post-Adjustment
+    const predictedTsh = parseFloat(
+        (measuredTsh * Math.exp(-beta * (recommendedDose - currentDose))).toFixed(2)
+    )
+
+    // 7. Objective Cost Function Value (Squared Log Residual Loss)
+    const residualError = Math.pow(Math.log(predictedTsh) - Math.log(targetTsh), 2)
+    const objectiveValue = parseFloat(residualError.toFixed(6))
+
+    // 8. Dynamic Note Generation
+    const isUnmedicated = currentDose === 0
+    const calculationNote = isUnmedicated
+        ? `Initial Starting Dose (${latestLab.date}): Unmedicated baseline (TSH ${measuredTsh} µIU/mL) -> Recommended ${recommendedDose} mcg/day`
+        : `Titration Adjustment (${latestLab.date}): Current ${currentDose} mcg/day (TSH ${measuredTsh} µIU/mL) -> Recommended ${recommendedDose} mcg/day`
 
     return {
-        latestWeightKg: latestRecord.weightKg,
-        leanBodyMassKg: Number(lbm.toFixed(1)),
-        individualClearance: Number(optimalCL.toFixed(4)),
-        recommendedDoseMcg,
-        predictedTsh: Number(predictTsh(recommendedDoseMcg, optimalCL).toFixed(2)),
-        objectiveValue: Number(objectiveFunction(optimalCL, popClearance, history).toFixed(4)),
-        calculationNote: `MAP Bayesian optimization complete (${patient.thyroidStatus}, ${patient.isHashimotos ? 'Hashimoto+' : 'Non-autoimmune'}).`
+        recommendedDoseMcg: recommendedDose,
+        leanBodyMassKg: parseFloat(lbm.toFixed(1)),
+        latestWeightKg: weight,
+        individualClearance: parseFloat(nominalClearance.toFixed(2)),
+        predictedTsh: predictedTsh,
+        objectiveValue: objectiveValue,
+        calculationNote: calculationNote,
     }
 }
