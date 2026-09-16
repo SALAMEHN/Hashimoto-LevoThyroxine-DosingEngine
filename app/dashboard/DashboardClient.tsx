@@ -41,16 +41,17 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const [result, setResult] = useState<EstimationResult | null>(null)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
-    // Compute snapshot key for current inputs
     const currentSnapshot = JSON.stringify({ patient, history })
     const isUpToDate = savedRuns.length > 0 && lastCalculatedSnapshot === currentSnapshot
+
+    // Check if current form date matches an existing record in history
+    const existingRecordForDate = history.find((r) => r.date === newEntry.date)
 
     useEffect(() => {
         const fetchData = async () => {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
 
-            // Load Profile
             const { data: profileData } = await supabase
                 .from('patient_profiles')
                 .select('*')
@@ -70,7 +71,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 setPatient(loadedPatient)
             }
 
-            // Load Labs
             const { data: labData } = await supabase
                 .from('lab_records')
                 .select('*')
@@ -94,7 +94,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 setHistory(loadedHistory)
             }
 
-            // Load Saved Runs
             const { data: runsData } = await supabase
                 .from('optimization_runs')
                 .select('*')
@@ -113,7 +112,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 }))
                 setSavedRuns(loadedRuns)
 
-                // Lock button if historical run already exists for current inputs
                 if (loadedRuns.length > 0) {
                     setLastCalculatedSnapshot(JSON.stringify({ patient: loadedPatient, history: loadedHistory }))
                 }
@@ -142,44 +140,95 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         alert('Baseline metrics saved successfully!')
     }
 
-    const handleAddRecord = async () => {
+    // Handle Upsert (Insert new or Edit existing date)
+    const handleSaveRecord = async () => {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
-        const { data } = await supabase
-            .from('lab_records')
-            .insert({
-                user_id: user.id,
-                date: newEntry.date,
-                weight_kg: newEntry.weightKg,
-                lbm_method: newEntry.lbmMethod,
-                waist_cm: newEntry.lbmMethod === 'waist' ? newEntry.waistCm : null,
-                dexa_lbm_kg: newEntry.lbmMethod === 'dexa' ? newEntry.dexaLbmKg : null,
-                daily_dose_mcg: newEntry.dailyDoseMcg,
-                tsh_measured: newEntry.tshMeasured,
-                free_t4: newEntry.freeT4 || null,
-                free_t3: newEntry.freeT3 || null,
-            })
-            .select()
-            .single()
-
-        if (data) {
-            setHistory([
-                ...history,
-                {
-                    id: data.id,
-                    date: data.date,
-                    weightKg: data.weight_kg,
-                    lbmMethod: data.lbm_method as LbmMethod,
-                    waistCm: data.waist_cm,
-                    dexaLbmKg: data.dexa_lbm_kg,
-                    dailyDoseMcg: data.daily_dose_mcg,
-                    tshMeasured: data.tsh_measured,
-                    freeT4: data.free_t4,
-                    freeT3: data.free_t3,
-                },
-            ])
+        const recordPayload = {
+            user_id: user.id,
+            date: newEntry.date,
+            weight_kg: newEntry.weightKg,
+            lbm_method: newEntry.lbmMethod,
+            waist_cm: newEntry.lbmMethod === 'waist' ? newEntry.waistCm : null,
+            dexa_lbm_kg: newEntry.lbmMethod === 'dexa' ? newEntry.dexaLbmKg : null,
+            daily_dose_mcg: newEntry.dailyDoseMcg,
+            tsh_measured: newEntry.tshMeasured,
+            free_t4: newEntry.freeT4 || null,
+            free_t3: newEntry.freeT3 || null,
         }
+
+        if (existingRecordForDate) {
+            // Edit existing entry for this date
+            const { data } = await supabase
+                .from('lab_records')
+                .update(recordPayload)
+                .eq('id', existingRecordForDate.id)
+                .select()
+                .single()
+
+            if (data) {
+                setHistory(
+                    history.map((r) =>
+                        r.id === existingRecordForDate.id
+                            ? {
+                                id: data.id,
+                                date: data.date,
+                                weightKg: data.weight_kg,
+                                lbmMethod: data.lbm_method as LbmMethod,
+                                waistCm: data.waist_cm,
+                                dexaLbmKg: data.dexa_lbm_kg,
+                                dailyDoseMcg: data.daily_dose_mcg,
+                                tshMeasured: data.tsh_measured,
+                                freeT4: data.free_t4,
+                                freeT3: data.free_t3,
+                            }
+                            : r
+                    )
+                )
+            }
+        } else {
+            // Insert new entry
+            const { data } = await supabase
+                .from('lab_records')
+                .insert(recordPayload)
+                .select()
+                .single()
+
+            if (data) {
+                const updated = [
+                    ...history,
+                    {
+                        id: data.id,
+                        date: data.date,
+                        weightKg: data.weight_kg,
+                        lbmMethod: data.lbm_method as LbmMethod,
+                        waistCm: data.waist_cm,
+                        dexaLbmKg: data.dexa_lbm_kg,
+                        dailyDoseMcg: data.daily_dose_mcg,
+                        tshMeasured: data.tsh_measured,
+                        freeT4: data.free_t4,
+                        freeT3: data.free_t3,
+                    },
+                ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+                setHistory(updated)
+            }
+        }
+    }
+
+    const handleEditRecordClick = (record: LabRecord) => {
+        setNewEntry({
+            date: record.date,
+            weightKg: record.weightKg,
+            lbmMethod: record.lbmMethod,
+            waistCm: record.waistCm || 100,
+            dexaLbmKg: record.dexaLbmKg || 75,
+            dailyDoseMcg: record.dailyDoseMcg,
+            tshMeasured: record.tshMeasured,
+            freeT4: record.freeT4 || 0,
+            freeT3: record.freeT3 || 0,
+        })
     }
 
     const handleRemoveRecord = async (id: string) => {
@@ -226,7 +275,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         },
                         ...savedRuns,
                     ])
-                    // Lock duplicate recalculations until history or patient baseline changes
                     setLastCalculatedSnapshot(currentSnapshot)
                 }
             }
@@ -369,7 +417,16 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             {activeTab === 'history' && (
                 <div className="space-y-6">
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
-                        <h2 className="text-lg font-semibold text-emerald-300">Log New Lab & Weight Observation</h2>
+                        <div className="flex justify-between items-center">
+                            <h2 className="text-lg font-semibold text-emerald-300">
+                                {existingRecordForDate ? 'Edit Observation for Date' : 'Log New Lab & Weight Observation'}
+                            </h2>
+                            {existingRecordForDate && (
+                                <span className="text-xs bg-amber-950 border border-amber-800 text-amber-300 px-2 py-0.5 rounded">
+                                    Overwriting Entry for {newEntry.date}
+                                </span>
+                            )}
+                        </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                             <div>
@@ -471,10 +528,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         </div>
 
                         <button
-                            onClick={handleAddRecord}
-                            className="w-full bg-emerald-700 hover:bg-emerald-600 text-sm py-2.5 rounded transition text-white font-semibold cursor-pointer"
+                            onClick={handleSaveRecord}
+                            className={`w-full text-sm py-2.5 rounded transition text-white font-semibold cursor-pointer ${existingRecordForDate ? 'bg-amber-700 hover:bg-amber-600' : 'bg-emerald-700 hover:bg-emerald-600'
+                                }`}
                         >
-                            + Record Observation
+                            {existingRecordForDate ? 'Update Existing Entry for Date' : '+ Record Observation'}
                         </button>
                     </div>
 
@@ -487,7 +545,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                 {history.map((record) => (
                                     <div key={record.id} className="flex justify-between items-center bg-gray-950 p-3 rounded border border-gray-800 text-sm">
                                         <div>
-                                            <span className="text-gray-400 text-xs mr-3">{record.date}</span>
+                                            <span className="text-gray-400 text-xs mr-3 font-mono">{record.date}</span>
                                             <strong className="text-white">{record.weightKg} kg</strong>
                                             <span className="text-gray-500 mx-2">|</span>
                                             {record.lbmMethod === 'dexa' ? `DEXA LBM: ${record.dexaLbmKg} kg` : `Waist: ${record.waistCm} cm`}
@@ -498,12 +556,20 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                             {record.freeT4 ? <span className="text-gray-400 ml-2">| FT4: {record.freeT4}</span> : null}
                                             {record.freeT3 ? <span className="text-gray-400 ml-2">| FT3: {record.freeT3}</span> : null}
                                         </div>
-                                        <button
-                                            onClick={() => handleRemoveRecord(record.id)}
-                                            className="text-xs text-red-400 hover:text-red-300 ml-4"
-                                        >
-                                            Delete
-                                        </button>
+                                        <div className="flex gap-3">
+                                            <button
+                                                onClick={() => handleEditRecordClick(record)}
+                                                className="text-xs text-emerald-400 hover:text-emerald-300"
+                                            >
+                                                Edit
+                                            </button>
+                                            <button
+                                                onClick={() => handleRemoveRecord(record.id)}
+                                                className="text-xs text-red-400 hover:text-red-300"
+                                            >
+                                                Delete
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
