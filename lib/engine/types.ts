@@ -1,22 +1,25 @@
 export interface PatientProfile {
-    weightKg: number
+    birthYear: number
     heightCm: number
-    waistCm?: number
-    age: number
     sex: 'male' | 'female'
-    targetTsh: number // mIU/L
+    targetTsh: number
 }
 
 export interface LabRecord {
+    id: string
     date: string
+    weightKg: number
+    waistCm?: number
     dailyDoseMcg: number
-    tshMeasured: number // mIU/L
+    tshMeasured: number
 }
 
 export interface EstimationResult {
+    latestWeightKg: number
     leanBodyMassKg: number
     individualClearance: number // L/day
     recommendedDoseMcg: number // mcg/day
     predictedTsh: number // mIU/L
     objectiveValue: number
+    calculationNote: string
 }

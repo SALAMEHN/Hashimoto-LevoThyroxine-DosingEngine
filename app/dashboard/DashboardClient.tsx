@@ -10,22 +10,36 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const router = useRouter()
     const supabase = createClient()
 
+    const [activeTab, setActiveTab] = useState<'profile' | 'history' | 'calculator'>('profile')
+
     const [patient, setPatient] = useState<PatientProfile>({
-        weightKg: 110,
+        birthYear: 1990,
         heightCm: 180,
-        waistCm: 100,
-        age: 35,
         sex: 'male',
         targetTsh: 1.5,
     })
 
     const [history, setHistory] = useState<LabRecord[]>([
-        { date: '2026-01-01', dailyDoseMcg: 100, tshMeasured: 5.2 },
+        {
+            id: '1',
+            date: new Date().toISOString().split('T')[0],
+            weightKg: 110,
+            waistCm: 100,
+            dailyDoseMcg: 100,
+            tshMeasured: 5.2,
+        },
     ])
 
-    const [newDose, setNewDose] = useState<number>(100)
-    const [newTsh, setNewTsh] = useState<number>(5.2)
+    const [newEntry, setNewEntry] = useState<Omit<LabRecord, 'id'>>({
+        date: new Date().toISOString().split('T')[0],
+        weightKg: 110,
+        waistCm: 100,
+        dailyDoseMcg: 100,
+        tshMeasured: 5.2,
+    })
+
     const [result, setResult] = useState<EstimationResult | null>(null)
+    const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
     const handleSignOut = async () => {
         await supabase.auth.signOut()
@@ -35,28 +49,29 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const handleAddRecord = () => {
         setHistory([
             ...history,
-            {
-                date: new Date().toISOString().split('T')[0],
-                dailyDoseMcg: newDose,
-                tshMeasured: newTsh,
-            },
+            { ...newEntry, id: Math.random().toString(36).substring(2, 9) },
         ])
     }
 
-    const handleRemoveRecord = (index: number) => {
-        setHistory(history.filter((_, i) => i !== index))
+    const handleRemoveRecord = (id: string) => {
+        setHistory(history.filter((r) => r.id !== id))
     }
 
-    const handleCalculate = () => {
-        const res = calculateMapDose(patient, history)
-        setResult(res)
+    const handleRunCalculator = () => {
+        setErrorMsg(null)
+        try {
+            const res = calculateMapDose(patient, history)
+            setResult(res)
+        } catch (err: any) {
+            setErrorMsg(err.message || 'Calculation error.')
+        }
     }
 
     return (
         <div className="max-w-4xl mx-auto space-y-6">
             <div className="flex justify-between items-center border-b border-gray-800 pb-4">
                 <div>
-                    <h1 className="text-2xl font-bold text-emerald-400">Thyroid Engine Dashboard</h1>
+                    <h1 className="text-2xl font-bold text-emerald-400">Thyroid Titration Workspace</h1>
                     <p className="text-xs text-gray-400 font-mono">User: {userEmail}</p>
                 </div>
                 <button
@@ -67,57 +82,78 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
-                    <h2 className="text-lg font-semibold text-emerald-300">Patient Anthropometrics</h2>
-                    <div className="grid grid-cols-2 gap-3">
+            {/* Navigation Tabs */}
+            <div className="flex border-b border-gray-800 gap-2">
+                <button
+                    onClick={() => setActiveTab('profile')}
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition ${activeTab === 'profile'
+                            ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                >
+                    1. Patient Baseline
+                </button>
+                <button
+                    onClick={() => setActiveTab('history')}
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition ${activeTab === 'history'
+                            ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                >
+                    2. Lab & Weight Log ({history.length})
+                </button>
+                <button
+                    onClick={() => setActiveTab('calculator')}
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition ${activeTab === 'calculator'
+                            ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800'
+                            : 'text-gray-400 hover:text-white'
+                        }`}
+                >
+                    3. Bayesian Engine
+                </button>
+            </div>
+
+            {/* Tab 1: Static Patient Profile */}
+            {activeTab === 'profile' && (
+                <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-4">
+                    <h2 className="text-lg font-semibold text-emerald-300">Immutable Baseline Metrics</h2>
+                    <p className="text-xs text-gray-400">
+                        These physical parameters change rarely and serve as standard baseline inputs.
+                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
-                            <label className="block text-xs text-gray-400 mb-1">Weight (kg)</label>
+                            <label className="block text-xs text-gray-400 mb-1">Birth Year</label>
                             <input
                                 type="number"
-                                value={patient.weightKg}
-                                onChange={(e) => setPatient({ ...patient, weightKg: parseFloat(e.target.value) || 0 })}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                value={patient.birthYear}
+                                onChange={(e) => setPatient({ ...patient, birthYear: parseInt(e.target.value) || 1990 })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
                             />
                         </div>
+
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Biological Sex</label>
+                            <select
+                                value={patient.sex}
+                                onChange={(e) => setPatient({ ...patient, sex: e.target.value as 'male' | 'female' })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value="male">Male</option>
+                                <option value="female">Female</option>
+                            </select>
+                        </div>
+
                         <div>
                             <label className="block text-xs text-gray-400 mb-1">Height (cm)</label>
                             <input
                                 type="number"
                                 value={patient.heightCm}
                                 onChange={(e) => setPatient({ ...patient, heightCm: parseFloat(e.target.value) || 0 })}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
                             />
                         </div>
-                        <div>
-                            <label className="block text-xs text-gray-400 mb-1">Waist (cm)</label>
-                            <input
-                                type="number"
-                                value={patient.waistCm || ''}
-                                onChange={(e) => setPatient({ ...patient, waistCm: parseFloat(e.target.value) || 0 })}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs text-gray-400 mb-1">Age (yrs)</label>
-                            <input
-                                type="number"
-                                value={patient.age}
-                                onChange={(e) => setPatient({ ...patient, age: parseFloat(e.target.value) || 0 })}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs text-gray-400 mb-1">Sex</label>
-                            <select
-                                value={patient.sex}
-                                onChange={(e) => setPatient({ ...patient, sex: e.target.value as 'male' | 'female' })}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                            >
-                                <option value="male">Male</option>
-                                <option value="female">Female</option>
-                            </select>
-                        </div>
+
                         <div>
                             <label className="block text-xs text-gray-400 mb-1">Target TSH (mIU/L)</label>
                             <input
@@ -125,95 +161,162 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                 step="0.1"
                                 value={patient.targetTsh}
                                 onChange={(e) => setPatient({ ...patient, targetTsh: parseFloat(e.target.value) || 0 })}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
                             />
                         </div>
                     </div>
                 </div>
+            )}
 
-                <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
-                    <h2 className="text-lg font-semibold text-emerald-300">Add Lab Entry</h2>
-                    <div className="grid grid-cols-2 gap-3">
-                        <div>
-                            <label className="block text-xs text-gray-400 mb-1">Dose (mcg/day)</label>
-                            <input
-                                type="number"
-                                value={newDose}
-                                onChange={(e) => setNewDose(parseFloat(e.target.value) || 0)}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs text-gray-400 mb-1">TSH (mIU/L)</label>
-                            <input
-                                type="number"
-                                step="0.1"
-                                value={newTsh}
-                                onChange={(e) => setNewTsh(parseFloat(e.target.value) || 0)}
-                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                            />
-                        </div>
-                    </div>
-                    <button
-                        onClick={handleAddRecord}
-                        className="w-full bg-gray-800 hover:bg-gray-700 text-sm py-2 rounded transition text-gray-200 font-medium cursor-pointer"
-                    >
-                        + Add Entry
-                    </button>
-                </div>
-            </div>
-
-            <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-3">
-                <h2 className="text-lg font-semibold text-emerald-300">Lab History</h2>
-                {history.length === 0 ? (
-                    <p className="text-xs text-gray-500">No lab entries recorded yet.</p>
-                ) : (
-                    <div className="space-y-2">
-                        {history.map((record, index) => (
-                            <div key={index} className="flex justify-between items-center bg-gray-950 p-3 rounded border border-gray-800 text-sm">
-                                <span>
-                                    Dose: <strong className="text-white">{record.dailyDoseMcg} mcg</strong> | Measured TSH: <strong className="text-emerald-400">{record.tshMeasured} mIU/L</strong>
-                                </span>
-                                <button
-                                    onClick={() => handleRemoveRecord(index)}
-                                    className="text-xs text-red-400 hover:text-red-300"
-                                >
-                                    Delete
-                                </button>
+            {/* Tab 2: Dynamic Lab & Weight History */}
+            {activeTab === 'history' && (
+                <div className="space-y-6">
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
+                        <h2 className="text-lg font-semibold text-emerald-300">Log New Lab & Weight Observation</h2>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Date</label>
+                                <input
+                                    type="date"
+                                    value={newEntry.date}
+                                    onChange={(e) => setNewEntry({ ...newEntry, date: e.target.value })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
                             </div>
-                        ))}
-                    </div>
-                )}
-            </div>
 
-            <button
-                onClick={handleCalculate}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition shadow-lg cursor-pointer"
-            >
-                Compute MAP Bayesian Recommendation
-            </button>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Weight at Lab (kg)</label>
+                                <input
+                                    type="number"
+                                    value={newEntry.weightKg}
+                                    onChange={(e) => setNewEntry({ ...newEntry, weightKg: parseFloat(e.target.value) || 0 })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
 
-            {result && (
-                <div className="border border-emerald-500/30 bg-emerald-950/20 rounded-xl p-6 space-y-4">
-                    <h2 className="text-xl font-bold text-emerald-400">Optimization Result</h2>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-                        <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                            <div className="text-xs text-gray-400">Recommended Dose</div>
-                            <div className="text-2xl font-extrabold text-emerald-400">{result.recommendedDoseMcg} mcg</div>
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Waist (cm, optional)</label>
+                                <input
+                                    type="number"
+                                    value={newEntry.waistCm || ''}
+                                    onChange={(e) => setNewEntry({ ...newEntry, waistCm: parseFloat(e.target.value) || 0 })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Daily Dose (mcg)</label>
+                                <input
+                                    type="number"
+                                    value={newEntry.dailyDoseMcg}
+                                    onChange={(e) => setNewEntry({ ...newEntry, dailyDoseMcg: parseFloat(e.target.value) || 0 })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Measured TSH (mIU/L)</label>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    value={newEntry.tshMeasured}
+                                    onChange={(e) => setNewEntry({ ...newEntry, tshMeasured: parseFloat(e.target.value) || 0 })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
                         </div>
-                        <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                            <div className="text-xs text-gray-400">Estimated LBM</div>
-                            <div className="text-xl font-bold text-white">{result.leanBodyMassKg} kg</div>
-                        </div>
-                        <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                            <div className="text-xs text-gray-400">Individual Clearance</div>
-                            <div className="text-xl font-bold text-white">{result.individualClearance} L/day</div>
-                        </div>
-                        <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                            <div className="text-xs text-gray-400">Predicted TSH</div>
-                            <div className="text-xl font-bold text-white">{result.predictedTsh} mIU/L</div>
-                        </div>
+
+                        <button
+                            onClick={handleAddRecord}
+                            className="w-full bg-emerald-700 hover:bg-emerald-600 text-sm py-2.5 rounded transition text-white font-semibold cursor-pointer"
+                        >
+                            + Record Observation
+                        </button>
                     </div>
+
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-3">
+                        <h2 className="text-lg font-semibold text-emerald-300">Longitudinal Lab History</h2>
+                        {history.length === 0 ? (
+                            <p className="text-xs text-gray-500">No observations recorded.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {history.map((record) => (
+                                    <div key={record.id} className="flex justify-between items-center bg-gray-950 p-3 rounded border border-gray-800 text-sm">
+                                        <div>
+                                            <span className="text-gray-400 text-xs mr-3">{record.date}</span>
+                                            <strong className="text-white">{record.weightKg} kg</strong>
+                                            <span className="text-gray-500 mx-2">|</span>
+                                            Dose: <strong className="text-white">{record.dailyDoseMcg} mcg</strong>
+                                            <span className="text-gray-500 mx-2">|</span>
+                                            TSH: <strong className="text-emerald-400">{record.tshMeasured} mIU/L</strong>
+                                        </div>
+                                        <button
+                                            onClick={() => handleRemoveRecord(record.id)}
+                                            className="text-xs text-red-400 hover:text-red-300 ml-4"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Tab 3: Calculation Engine */}
+            {activeTab === 'calculator' && (
+                <div className="space-y-6">
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-4">
+                        <h2 className="text-lg font-semibold text-emerald-300">Bayesian MAP Solver Workspace</h2>
+                        <p className="text-xs text-gray-400">
+                            Computes individual thyroxine clearance ($CL$) using Lean Body Mass and historical dose-response pairs.
+                        </p>
+
+                        <button
+                            onClick={handleRunCalculator}
+                            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition shadow-lg cursor-pointer"
+                        >
+                            Run Titration Optimization
+                        </button>
+
+                        {errorMsg && (
+                            <div className="p-3 bg-red-950/50 border border-red-800 text-red-300 text-xs rounded">
+                                {errorMsg}
+                            </div>
+                        )}
+                    </div>
+
+                    {result && (
+                        <div className="border border-emerald-500/30 bg-emerald-950/20 rounded-xl p-6 space-y-5">
+                            <div className="flex justify-between items-start">
+                                <h2 className="text-xl font-bold text-emerald-400">Optimization Result</h2>
+                                <span className="text-xs bg-emerald-950 border border-emerald-800 text-emerald-300 px-2.5 py-1 rounded-full font-mono">
+                                    {result.calculationNote}
+                                </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+                                <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                                    <div className="text-xs text-gray-400">Recommended Dose</div>
+                                    <div className="text-2xl font-extrabold text-emerald-400">{result.recommendedDoseMcg} mcg</div>
+                                </div>
+                                <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                                    <div className="text-xs text-gray-400">Estimated LBM</div>
+                                    <div className="text-xl font-bold text-white">{result.leanBodyMassKg} kg</div>
+                                    <div className="text-[10px] text-gray-500">Latest Wt: {result.latestWeightKg} kg</div>
+                                </div>
+                                <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                                    <div className="text-xs text-gray-400">Estimated Clearance</div>
+                                    <div className="text-xl font-bold text-white">{result.individualClearance} L/day</div>
+                                </div>
+                                <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                                    <div className="text-xs text-gray-400">Predicted TSH</div>
+                                    <div className="text-xl font-bold text-white">{result.predictedTsh} mIU/L</div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>
