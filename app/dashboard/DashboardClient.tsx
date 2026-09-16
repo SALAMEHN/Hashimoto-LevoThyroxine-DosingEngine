@@ -10,9 +10,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const router = useRouter()
     const supabase = createClient()
 
+    // Navigation and loading states
     const [activeTab, setActiveTab] = useState<'profile' | 'history' | 'calculator'>('profile')
     const [loading, setLoading] = useState(true)
 
+    // Patient baseline configuration state
     const [patient, setPatient] = useState<PatientProfile>({
         birthYear: 1990,
         heightCm: 180,
@@ -22,10 +24,12 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         isHashimotos: false,
     })
 
+    // Longitudinal lab records and optimization runs history
     const [history, setHistory] = useState<(LabRecord & { antiTpo?: number; antiTg?: number })[]>([])
     const [savedRuns, setSavedRuns] = useState<OptimizationRun[]>([])
     const [lastCalculatedSnapshot, setLastCalculatedSnapshot] = useState<string>('')
 
+    // Form state for adding/editing a lab observation
     const [newEntry, setNewEntry] = useState({
         date: new Date().toISOString().split('T')[0],
         weightKg: 110,
@@ -40,6 +44,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         antiTg: 0,
     })
 
+    // Calculation output state and error banners
     const [result, setResult] = useState<EstimationResult | null>(null)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
@@ -47,11 +52,13 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const isUpToDate = savedRuns.length > 0 && lastCalculatedSnapshot === currentSnapshot
     const existingRecordForDate = history.find((r) => r.date === newEntry.date)
 
+    // Initial data hydration from Supabase on mount
     useEffect(() => {
         const fetchData = async () => {
             const { data: { user } } = await supabase.auth.getUser()
             if (!user) return
 
+            // Load patient profile baseline
             const { data: profileData } = await supabase
                 .from('patient_profiles')
                 .select('*')
@@ -71,6 +78,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 setPatient(loadedPatient)
             }
 
+            // Load longitudinal lab records
             const { data: labData } = await supabase
                 .from('lab_records')
                 .select('*')
@@ -96,6 +104,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 setHistory(loadedHistory)
             }
 
+            // Load saved optimization runs
             const { data: runsData } = await supabase
                 .from('optimization_runs')
                 .select('*')
@@ -125,11 +134,13 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         fetchData()
     }, [])
 
+    // Handler: Save or update patient baseline profile metrics
     const handleSaveProfile = async () => {
+        setErrorMsg(null)
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
 
-        await supabase.from('patient_profiles').upsert({
+        const { error } = await supabase.from('patient_profiles').upsert({
             user_id: user.id,
             birth_year: patient.birthYear,
             height_cm: patient.heightCm,
@@ -139,90 +150,130 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             is_hashimotos: patient.isHashimotos,
             updated_at: new Date().toISOString(),
         })
+
+        if (error) {
+            setErrorMsg(`Failed to save profile: ${error.message}`)
+            return
+        }
+
         alert('Baseline metrics saved successfully!')
     }
 
+    // Handler: Insert or update lab observation record with explicit error catching
     const handleSaveRecord = async () => {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return
+        setErrorMsg(null)
 
-        // Explicitly nullify unused method fields when toggling between DEXA and Waist
+        // 1. Verify active user session
+        const { data: { user }, error: authError } = await supabase.auth.getUser()
+        if (authError || !user) {
+            setErrorMsg('Authentication error: User session not found. Please sign in again.')
+            return
+        }
+
+        // 2. Format payload: Nullify unused body comp fields based on selected method
         const recordPayload = {
             user_id: user.id,
             date: newEntry.date,
-            weight_kg: newEntry.weightKg,
+            weight_kg: Number(newEntry.weightKg),
             lbm_method: newEntry.lbmMethod,
-            waist_cm: newEntry.lbmMethod === 'waist' ? newEntry.waistCm : null,
-            dexa_lbm_kg: newEntry.lbmMethod === 'dexa' ? newEntry.dexaLbmKg : null,
-            daily_dose_mcg: newEntry.dailyDoseMcg,
-            tsh_measured: newEntry.tshMeasured,
-            free_t4: newEntry.freeT4 || null,
-            free_t3: newEntry.freeT3 || null,
-            anti_tpo: newEntry.antiTpo || null,
-            anti_tg: newEntry.antiTg || null,
+            waist_cm: newEntry.lbmMethod === 'waist' ? Number(newEntry.waistCm) || null : null,
+            dexa_lbm_kg: newEntry.lbmMethod === 'dexa' ? Number(newEntry.dexaLbmKg) || null : null,
+            daily_dose_mcg: Number(newEntry.dailyDoseMcg),
+            tsh_measured: Number(newEntry.tshMeasured),
+            free_t4: newEntry.freeT4 ? Number(newEntry.freeT4) : null,
+            free_t3: newEntry.freeT3 ? Number(newEntry.freeT3) : null,
+            anti_tpo: newEntry.antiTpo ? Number(newEntry.antiTpo) : null,
+            anti_tg: newEntry.antiTg ? Number(newEntry.antiTg) : null,
         }
 
-        if (existingRecordForDate) {
-            const { data } = await supabase
-                .from('lab_records')
-                .update(recordPayload)
-                .eq('id', existingRecordForDate.id)
-                .select()
-                .single()
+        try {
+            if (existingRecordForDate) {
+                // 3a. Update existing database record matching the selected date
+                const { data, error } = await supabase
+                    .from('lab_records')
+                    .update(recordPayload)
+                    .eq('id', existingRecordForDate.id)
+                    .select()
+                    .single()
 
-            if (data) {
-                setHistory(
-                    history.map((r) =>
-                        r.id === existingRecordForDate.id
-                            ? {
-                                id: data.id,
-                                date: data.date,
-                                weightKg: data.weight_kg,
-                                lbmMethod: data.lbm_method as LbmMethod,
-                                waistCm: data.waist_cm,
-                                dexaLbmKg: data.dexa_lbm_kg,
-                                dailyDoseMcg: data.daily_dose_mcg,
-                                tshMeasured: data.tsh_measured,
-                                freeT4: data.free_t4,
-                                freeT3: data.free_t3,
-                                antiTpo: data.anti_tpo || 0,
-                                antiTg: data.anti_tg || 0,
-                            }
-                            : r
+                if (error) throw error
+
+                if (data) {
+                    setHistory(
+                        history.map((r) =>
+                            r.id === existingRecordForDate.id
+                                ? {
+                                    id: data.id,
+                                    date: data.date,
+                                    weightKg: data.weight_kg,
+                                    lbmMethod: data.lbm_method as LbmMethod,
+                                    waistCm: data.waist_cm,
+                                    dexaLbmKg: data.dexa_lbm_kg,
+                                    dailyDoseMcg: data.daily_dose_mcg,
+                                    tshMeasured: data.tsh_measured,
+                                    freeT4: data.free_t4,
+                                    freeT3: data.free_t3,
+                                    antiTpo: data.anti_tpo || 0,
+                                    antiTg: data.anti_tg || 0,
+                                }
+                                : r
+                        )
                     )
-                )
-            }
-        } else {
-            const { data } = await supabase
-                .from('lab_records')
-                .insert(recordPayload)
-                .select()
-                .single()
+                }
+            } else {
+                // 3b. Insert new record into database
+                const { data, error } = await supabase
+                    .from('lab_records')
+                    .insert(recordPayload)
+                    .select()
+                    .single()
 
-            if (data) {
-                const updated = [
-                    ...history,
-                    {
-                        id: data.id,
-                        date: data.date,
-                        weightKg: data.weight_kg,
-                        lbmMethod: data.lbm_method as LbmMethod,
-                        waistCm: data.waist_cm,
-                        dexaLbmKg: data.dexa_lbm_kg,
-                        dailyDoseMcg: data.daily_dose_mcg,
-                        tshMeasured: data.tsh_measured,
-                        freeT4: data.free_t4,
-                        freeT3: data.free_t3,
-                        antiTpo: data.anti_tpo || 0,
-                        antiTg: data.anti_tg || 0,
-                    },
-                ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                if (error) throw error
 
-                setHistory(updated)
+                if (data) {
+                    const updated = [
+                        ...history,
+                        {
+                            id: data.id,
+                            date: data.date,
+                            weightKg: data.weight_kg,
+                            lbmMethod: data.lbm_method as LbmMethod,
+                            waistCm: data.waist_cm,
+                            dexaLbmKg: data.dexa_lbm_kg,
+                            dailyDoseMcg: data.daily_dose_mcg,
+                            tshMeasured: data.tsh_measured,
+                            freeT4: data.free_t4,
+                            freeT3: data.free_t3,
+                            antiTpo: data.anti_tpo || 0,
+                            antiTg: data.anti_tg || 0,
+                        },
+                    ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+
+                    setHistory(updated)
+                }
             }
+
+            // 4. Reset form inputs back to defaults after successful save
+            setNewEntry({
+                date: new Date().toISOString().split('T')[0],
+                weightKg: 110,
+                lbmMethod: 'waist',
+                waistCm: 100,
+                dexaLbmKg: 75,
+                dailyDoseMcg: 0,
+                tshMeasured: 5.2,
+                freeT4: 0,
+                freeT3: 0,
+                antiTpo: 0,
+                antiTg: 0,
+            })
+        } catch (err: any) {
+            console.error('Supabase write error:', err)
+            setErrorMsg(`Database save failed: ${err.message || err.details || 'Unknown database error'}`)
         }
     }
 
+    // Handler: Load existing record into input form for editing
     const handleEditRecordClick = (record: LabRecord & { antiTpo?: number; antiTg?: number }) => {
         setNewEntry({
             date: record.date,
@@ -240,11 +291,18 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         window.scrollTo({ top: 0, behavior: 'smooth' })
     }
 
+    // Handler: Delete lab observation record from database and state
     const handleRemoveRecord = async (id: string) => {
-        await supabase.from('lab_records').delete().eq('id', id)
+        setErrorMsg(null)
+        const { error } = await supabase.from('lab_records').delete().eq('id', id)
+        if (error) {
+            setErrorMsg(`Failed to delete record: ${error.message}`)
+            return
+        }
         setHistory(history.filter((r) => r.id !== id))
     }
 
+    // Handler: Execute Bayesian MAP solver optimization run
     const handleRunCalculator = async () => {
         if (history.length === 0) {
             setErrorMsg('No lab records available to calculate titration.')
@@ -276,12 +334,14 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 }
 
                 if (existingRunForDate) {
-                    const { data: updatedRun } = await supabase
+                    const { data: updatedRun, error: updateError } = await supabase
                         .from('optimization_runs')
                         .update(runPayload)
                         .eq('id', existingRunForDate.id)
                         .select()
                         .single()
+
+                    if (updateError) throw updateError
 
                     if (updatedRun) {
                         setSavedRuns(
@@ -301,11 +361,13 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         )
                     }
                 } else {
-                    const { data: newRun } = await supabase
+                    const { data: newRun, error: insertError } = await supabase
                         .from('optimization_runs')
                         .insert(runPayload)
                         .select()
                         .single()
+
+                    if (insertError) throw insertError
 
                     if (newRun) {
                         setSavedRuns([
@@ -329,6 +391,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         }
     }
 
+    // Handler: Delete saved optimization run
     const handleDeleteRun = async (id: string, note: string) => {
         const logDateMatch = note.match(/\[Log Date: ([\d-]+)\]/)
         const associatedLogDate = logDateMatch ? logDateMatch[1] : null
@@ -339,7 +402,12 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             return
         }
 
-        await supabase.from('optimization_runs').delete().eq('id', id)
+        const { error } = await supabase.from('optimization_runs').delete().eq('id', id)
+        if (error) {
+            setErrorMsg(`Failed to delete run: ${error.message}`)
+            return
+        }
+
         const updatedRuns = savedRuns.filter((r) => r.id !== id)
         setSavedRuns(updatedRuns)
         if (updatedRuns.length === 0) {
@@ -353,6 +421,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
 
     return (
         <div className="max-w-4xl mx-auto space-y-6">
+            {/* Header */}
             <div className="flex justify-between items-center border-b border-gray-800 pb-4">
                 <div>
                     <h1 className="text-2xl font-bold text-emerald-400">Thyroid Titration Workspace</h1>
@@ -363,36 +432,46 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         await supabase.auth.signOut()
                         router.push('/login')
                     }}
-                    className="bg-gray-800 hover:bg-gray-700 text-xs text-red-400 border border-gray-700 px-3 py-1.5 rounded transition"
+                    className="bg-gray-800 hover:bg-gray-700 text-xs text-red-400 border border-gray-700 px-3 py-1.5 rounded transition cursor-pointer"
                 >
                     Sign Out
                 </button>
             </div>
 
+            {/* Navigation Tabs */}
             <div className="flex border-b border-gray-800 gap-2">
                 <button
                     onClick={() => setActiveTab('profile')}
-                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition ${activeTab === 'profile' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition cursor-pointer ${activeTab === 'profile' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
                         }`}
                 >
                     1. Patient Baseline
                 </button>
                 <button
                     onClick={() => setActiveTab('history')}
-                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition ${activeTab === 'history' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition cursor-pointer ${activeTab === 'history' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
                         }`}
                 >
                     2. Lab & Weight Log ({history.length})
                 </button>
                 <button
                     onClick={() => setActiveTab('calculator')}
-                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition ${activeTab === 'calculator' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition cursor-pointer ${activeTab === 'calculator' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
                         }`}
                 >
                     3. Bayesian Engine ({savedRuns.length})
                 </button>
             </div>
 
+            {/* Global Error Message Banner */}
+            {errorMsg && (
+                <div className="p-3 bg-red-950/90 border border-red-800 text-red-200 text-xs rounded font-mono flex justify-between items-center">
+                    <span>❌ {errorMsg}</span>
+                    <button onClick={() => setErrorMsg(null)} className="text-red-400 hover:text-red-200 font-bold ml-2">✕</button>
+                </div>
+            )}
+
+            {/* Tab 1: Patient Baseline */}
             {activeTab === 'profile' && (
                 <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-5">
                     <h2 className="text-lg font-semibold text-emerald-300">Immutable Baseline Metrics</h2>
@@ -462,13 +541,14 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                     </div>
                     <button
                         onClick={handleSaveProfile}
-                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg transition"
+                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg transition cursor-pointer"
                     >
                         Save Baseline Metrics
                     </button>
                 </div>
             )}
 
+            {/* Tab 2: Lab & Weight Log */}
             {activeTab === 'history' && (
                 <div className="space-y-6">
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
@@ -646,13 +726,13 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                         <div className="flex items-center gap-2 ml-4 shrink-0">
                                             <button
                                                 onClick={() => handleEditRecordClick(record)}
-                                                className="px-3 py-1 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded text-xs font-semibold transition"
+                                                className="px-3 py-1 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded text-xs font-semibold transition cursor-pointer"
                                             >
                                                 Edit
                                             </button>
                                             <button
                                                 onClick={() => handleRemoveRecord(record.id)}
-                                                className="px-3 py-1 bg-red-950 hover:bg-red-900 text-red-300 border border-red-800/60 rounded text-xs font-semibold transition"
+                                                className="px-3 py-1 bg-red-950 hover:bg-red-900 text-red-300 border border-red-800/60 rounded text-xs font-semibold transition cursor-pointer"
                                             >
                                                 Delete
                                             </button>
@@ -665,6 +745,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 </div>
             )}
 
+            {/* Tab 3: Bayesian Engine */}
             {activeTab === 'calculator' && (
                 <div className="space-y-6">
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-4">
@@ -680,12 +761,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         >
                             {isUpToDate ? 'Optimization Up To Date' : 'Run Titration Optimization'}
                         </button>
-
-                        {errorMsg && (
-                            <div className="p-3 bg-red-950/50 border border-red-800 text-red-300 text-xs rounded">
-                                {errorMsg}
-                            </div>
-                        )}
                     </div>
 
                     {result && (
@@ -766,7 +841,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                                 ) : (
                                                     <button
                                                         onClick={() => handleDeleteRun(run.id, run.calculationNote)}
-                                                        className="text-xs text-red-400 hover:text-red-300"
+                                                        className="text-xs text-red-400 hover:text-red-300 cursor-pointer"
                                                     >
                                                         Delete
                                                     </button>
