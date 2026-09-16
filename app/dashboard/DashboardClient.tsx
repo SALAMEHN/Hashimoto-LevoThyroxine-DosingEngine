@@ -22,7 +22,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         isHashimotos: false,
     })
 
-    const [history, setHistory] = useState<LabRecord[]>([])
+    const [history, setHistory] = useState<(LabRecord & { antiTpo?: number; antiTg?: number })[]>([])
     const [savedRuns, setSavedRuns] = useState<OptimizationRun[]>([])
     const [lastCalculatedSnapshot, setLastCalculatedSnapshot] = useState<string>('')
 
@@ -35,7 +35,9 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         dailyDoseMcg: 100,
         tshMeasured: 5.2,
         freeT4: 1.1,
-        freeT3: 2.8,
+        freeT3: 4.2,
+        antiTpo: 0,
+        antiTg: 0,
     })
 
     const [result, setResult] = useState<EstimationResult | null>(null)
@@ -44,7 +46,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const currentSnapshot = JSON.stringify({ patient, history })
     const isUpToDate = savedRuns.length > 0 && lastCalculatedSnapshot === currentSnapshot
 
-    // Check if current form date matches an existing record in history
     const existingRecordForDate = history.find((r) => r.date === newEntry.date)
 
     useEffect(() => {
@@ -77,7 +78,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 .eq('user_id', user.id)
                 .order('date', { ascending: true })
 
-            let loadedHistory: LabRecord[] = []
+            let loadedHistory: (LabRecord & { antiTpo?: number; antiTg?: number })[] = []
             if (labData) {
                 loadedHistory = labData.map((r) => ({
                     id: r.id,
@@ -90,6 +91,8 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                     tshMeasured: r.tsh_measured,
                     freeT4: r.free_t4,
                     freeT3: r.free_t3,
+                    antiTpo: r.anti_tpo || 0,
+                    antiTg: r.anti_tg || 0,
                 }))
                 setHistory(loadedHistory)
             }
@@ -140,7 +143,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         alert('Baseline metrics saved successfully!')
     }
 
-    // Handle Upsert (Insert new or Edit existing date)
     const handleSaveRecord = async () => {
         const { data: { user } } = await supabase.auth.getUser()
         if (!user) return
@@ -156,10 +158,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             tsh_measured: newEntry.tshMeasured,
             free_t4: newEntry.freeT4 || null,
             free_t3: newEntry.freeT3 || null,
+            anti_tpo: newEntry.antiTpo || null,
+            anti_tg: newEntry.antiTg || null,
         }
 
         if (existingRecordForDate) {
-            // Edit existing entry for this date
             const { data } = await supabase
                 .from('lab_records')
                 .update(recordPayload)
@@ -182,13 +185,14 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                 tshMeasured: data.tsh_measured,
                                 freeT4: data.free_t4,
                                 freeT3: data.free_t3,
+                                antiTpo: data.anti_tpo || 0,
+                                antiTg: data.anti_tg || 0,
                             }
                             : r
                     )
                 )
             }
         } else {
-            // Insert new entry
             const { data } = await supabase
                 .from('lab_records')
                 .insert(recordPayload)
@@ -209,6 +213,8 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         tshMeasured: data.tsh_measured,
                         freeT4: data.free_t4,
                         freeT3: data.free_t3,
+                        antiTpo: data.anti_tpo || 0,
+                        antiTg: data.anti_tg || 0,
                     },
                 ].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
@@ -217,7 +223,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         }
     }
 
-    const handleEditRecordClick = (record: LabRecord) => {
+    const handleEditRecordClick = (record: LabRecord & { antiTpo?: number; antiTg?: number }) => {
         setNewEntry({
             date: record.date,
             weightKg: record.weightKg,
@@ -228,7 +234,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             tshMeasured: record.tshMeasured,
             freeT4: record.freeT4 || 0,
             freeT3: record.freeT3 || 0,
+            antiTpo: record.antiTpo || 0,
+            antiTg: record.antiTg || 0,
         })
+        // Switch to active tab form view if needed
+        window.scrollTo({ top: 0, behavior: 'smooth' })
     }
 
     const handleRemoveRecord = async (id: string) => {
@@ -237,8 +247,8 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     }
 
     const handleRunCalculator = async () => {
-        if (isUpToDate) {
-            setErrorMsg('No new or updated observations detected since the last titration optimization.')
+        if (history.length === 0) {
+            setErrorMsg('No lab records available to calculate titration.')
             return
         }
 
@@ -247,36 +257,77 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             const res = calculateMapDose(patient, history)
             setResult(res)
 
+            // Target evaluation date is the latest date in history
+            const latestLogDate = history[history.length - 1].date
+            const noteWithDate = `[Log Date: ${latestLogDate}] ${res.calculationNote}`
+
             const { data: { user } } = await supabase.auth.getUser()
             if (user) {
-                const { data: runData } = await supabase
-                    .from('optimization_runs')
-                    .insert({
-                        user_id: user.id,
-                        recommended_dose_mcg: res.recommendedDoseMcg,
-                        estimated_lbm_kg: res.leanBodyMassKg,
-                        estimated_clearance: res.individualClearance,
-                        predicted_tsh: res.predictedTsh,
-                        calculation_note: res.calculationNote,
-                    })
-                    .select()
-                    .single()
+                // Look for an existing optimization run associated with this specific log date
+                const existingRunForDate = savedRuns.find((run) =>
+                    run.calculationNote.includes(`[Log Date: ${latestLogDate}]`)
+                )
 
-                if (runData) {
-                    setSavedRuns([
-                        {
-                            id: runData.id,
-                            createdAt: runData.created_at,
-                            recommendedDoseMcg: runData.recommended_dose_mcg,
-                            estimatedLbmKg: runData.estimated_lbm_kg,
-                            estimatedClearance: runData.estimated_clearance,
-                            predictedTsh: runData.predicted_tsh,
-                            calculationNote: runData.calculation_note,
-                        },
-                        ...savedRuns,
-                    ])
-                    setLastCalculatedSnapshot(currentSnapshot)
+                const runPayload = {
+                    user_id: user.id,
+                    recommended_dose_mcg: res.recommendedDoseMcg,
+                    estimated_lbm_kg: res.leanBodyMassKg,
+                    estimated_clearance: res.individualClearance,
+                    predicted_tsh: res.predictedTsh,
+                    calculation_note: noteWithDate,
+                    created_at: new Date().toISOString(),
                 }
+
+                if (existingRunForDate) {
+                    // Update existing run for this date
+                    const { data: updatedRun } = await supabase
+                        .from('optimization_runs')
+                        .update(runPayload)
+                        .eq('id', existingRunForDate.id)
+                        .select()
+                        .single()
+
+                    if (updatedRun) {
+                        setSavedRuns(
+                            savedRuns.map((r) =>
+                                r.id === existingRunForDate.id
+                                    ? {
+                                        id: updatedRun.id,
+                                        createdAt: updatedRun.created_at,
+                                        recommendedDoseMcg: updatedRun.recommended_dose_mcg,
+                                        estimatedLbmKg: updatedRun.estimated_lbm_kg,
+                                        estimatedClearance: updatedRun.estimated_clearance,
+                                        predictedTsh: updatedRun.predicted_tsh,
+                                        calculationNote: updatedRun.calculation_note,
+                                    }
+                                    : r
+                            )
+                        )
+                    }
+                } else {
+                    // Insert a new run for a new log date
+                    const { data: newRun } = await supabase
+                        .from('optimization_runs')
+                        .insert(runPayload)
+                        .select()
+                        .single()
+
+                    if (newRun) {
+                        setSavedRuns([
+                            {
+                                id: newRun.id,
+                                createdAt: newRun.created_at,
+                                recommendedDoseMcg: newRun.recommended_dose_mcg,
+                                estimatedLbmKg: newRun.estimated_lbm_kg,
+                                estimatedClearance: newRun.estimated_clearance,
+                                predictedTsh: newRun.predicted_tsh,
+                                calculationNote: newRun.calculation_note,
+                            },
+                            ...savedRuns,
+                        ])
+                    }
+                }
+                setLastCalculatedSnapshot(currentSnapshot)
             }
         } catch (err: any) {
             setErrorMsg(err.message || 'Calculation error.')
@@ -372,7 +423,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                             />
                         </div>
                         <div>
-                            <label className="block text-xs text-gray-400 mb-1">Target TSH (mIU/L)</label>
+                            <label className="block text-xs text-gray-400 mb-1">Target TSH (uIU/mL)</label>
                             <input
                                 type="number"
                                 step="0.1"
@@ -422,7 +473,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                 {existingRecordForDate ? 'Edit Observation for Date' : 'Log New Lab & Weight Observation'}
                             </h2>
                             {existingRecordForDate && (
-                                <span className="text-xs bg-amber-950 border border-amber-800 text-amber-300 px-2 py-0.5 rounded">
+                                <span className="text-xs bg-amber-950 border border-amber-800 text-amber-300 px-2 py-0.5 rounded font-mono">
                                     Overwriting Entry for {newEntry.date}
                                 </span>
                             )}
@@ -494,10 +545,10 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                             </div>
 
                             <div>
-                                <label className="block text-xs text-gray-400 mb-1">Measured TSH (mIU/L)</label>
+                                <label className="block text-xs text-gray-400 mb-1">Measured TSH (uIU/mL)</label>
                                 <input
                                     type="number"
-                                    step="0.1"
+                                    step="0.01"
                                     value={newEntry.tshMeasured}
                                     onChange={(e) => setNewEntry({ ...newEntry, tshMeasured: parseFloat(e.target.value) || 0 })}
                                     className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
@@ -516,12 +567,34 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                             </div>
 
                             <div>
-                                <label className="block text-xs text-gray-400 mb-1">Free T3 (pg/mL)</label>
+                                <label className="block text-xs text-gray-400 mb-1">Free T3 (pmol/L)</label>
                                 <input
                                     type="number"
                                     step="0.01"
                                     value={newEntry.freeT3 || ''}
                                     onChange={(e) => setNewEntry({ ...newEntry, freeT3: parseFloat(e.target.value) || 0 })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Anti-TPO (IU/mL)</label>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    value={newEntry.antiTpo || ''}
+                                    onChange={(e) => setNewEntry({ ...newEntry, antiTpo: parseFloat(e.target.value) || 0 })}
+                                    className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                                />
+                            </div>
+
+                            <div>
+                                <label className="block text-xs text-gray-400 mb-1">Anti-TG (IU/mL)</label>
+                                <input
+                                    type="number"
+                                    step="0.1"
+                                    value={newEntry.antiTg || ''}
+                                    onChange={(e) => setNewEntry({ ...newEntry, antiTg: parseFloat(e.target.value) || 0 })}
                                     className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
                                 />
                             </div>
@@ -544,28 +617,38 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                             <div className="space-y-2">
                                 {history.map((record) => (
                                     <div key={record.id} className="flex justify-between items-center bg-gray-950 p-3 rounded border border-gray-800 text-sm">
-                                        <div>
-                                            <span className="text-gray-400 text-xs mr-3 font-mono">{record.date}</span>
-                                            <strong className="text-white">{record.weightKg} kg</strong>
-                                            <span className="text-gray-500 mx-2">|</span>
-                                            {record.lbmMethod === 'dexa' ? `DEXA LBM: ${record.dexaLbmKg} kg` : `Waist: ${record.waistCm} cm`}
-                                            <span className="text-gray-500 mx-2">|</span>
-                                            Dose: <strong className="text-white">{record.dailyDoseMcg} mcg</strong>
-                                            <span className="text-gray-500 mx-2">|</span>
-                                            TSH: <strong className="text-emerald-400">{record.tshMeasured} mIU/L</strong>
-                                            {record.freeT4 ? <span className="text-gray-400 ml-2">| FT4: {record.freeT4}</span> : null}
-                                            {record.freeT3 ? <span className="text-gray-400 ml-2">| FT3: {record.freeT3}</span> : null}
+                                        <div className="space-y-1">
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-emerald-400 font-mono text-xs font-bold px-2 py-0.5 bg-emerald-950 border border-emerald-800 rounded">
+                                                    {record.date}
+                                                </span>
+                                                <strong className="text-white">{record.weightKg} kg</strong>
+                                                <span className="text-gray-600">|</span>
+                                                <span className="text-gray-300">
+                                                    {record.lbmMethod === 'dexa' ? `DEXA: ${record.dexaLbmKg} kg` : `Waist: ${record.waistCm} cm`}
+                                                </span>
+                                            </div>
+                                            <div className="text-xs text-gray-400 flex flex-wrap gap-x-2 gap-y-1">
+                                                <span>Dose: <strong className="text-white">{record.dailyDoseMcg} mcg</strong></span>
+                                                <span className="text-gray-600">|</span>
+                                                <span>TSH: <strong className="text-emerald-300">{record.tshMeasured} uIU/mL</strong></span>
+                                                {record.freeT4 ? <> <span className="text-gray-600">|</span> <span>FT4: {record.freeT4} ng/dL</span> </> : null}
+                                                {record.freeT3 ? <> <span className="text-gray-600">|</span> <span>FT3: {record.freeT3} pmol/L</span> </> : null}
+                                                {record.antiTpo ? <> <span className="text-gray-600">|</span> <span>Anti-TPO: {record.antiTpo} IU/mL</span> </> : null}
+                                                {record.antiTg ? <> <span className="text-gray-600">|</span> <span>Anti-TG: {record.antiTg} IU/mL</span> </> : null}
+                                            </div>
                                         </div>
-                                        <div className="flex gap-3">
+
+                                        <div className="flex items-center gap-2 ml-4 shrink-0">
                                             <button
                                                 onClick={() => handleEditRecordClick(record)}
-                                                className="text-xs text-emerald-400 hover:text-emerald-300"
+                                                className="px-3 py-1 bg-emerald-950 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/60 rounded text-xs font-semibold transition"
                                             >
                                                 Edit
                                             </button>
                                             <button
                                                 onClick={() => handleRemoveRecord(record.id)}
-                                                className="text-xs text-red-400 hover:text-red-300"
+                                                className="px-3 py-1 bg-red-950 hover:bg-red-900 text-red-300 border border-red-800/60 rounded text-xs font-semibold transition"
                                             >
                                                 Delete
                                             </button>
@@ -626,7 +709,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                 </div>
                                 <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
                                     <div className="text-xs text-gray-400">Predicted TSH</div>
-                                    <div className="text-xl font-bold text-white">{result.predictedTsh} mIU/L</div>
+                                    <div className="text-xl font-bold text-white">{result.predictedTsh} uIU/mL</div>
                                 </div>
                             </div>
                         </div>
@@ -648,8 +731,8 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                             <span className="text-gray-600 mx-2">|</span>
                                             CL: <span className="text-gray-300">{run.estimatedClearance} L/d</span>
                                             <span className="text-gray-600 mx-2">|</span>
-                                            Pred TSH: <span className="text-gray-300">{run.predictedTsh} mIU/L</span>
-                                            <div className="text-[10px] text-gray-500 mt-1">{run.calculationNote}</div>
+                                            Pred TSH: <span className="text-gray-300">{run.predictedTsh} uIU/mL</span>
+                                            <div className="text-[10px] text-emerald-400/80 mt-1 font-mono">{run.calculationNote}</div>
                                         </div>
                                         <button
                                             onClick={() => handleDeleteRun(run.id)}
