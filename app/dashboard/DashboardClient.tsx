@@ -24,6 +24,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
 
     const [history, setHistory] = useState<LabRecord[]>([])
     const [savedRuns, setSavedRuns] = useState<OptimizationRun[]>([])
+    const [lastCalculatedSnapshot, setLastCalculatedSnapshot] = useState<string>('')
 
     const [newEntry, setNewEntry] = useState({
         date: new Date().toISOString().split('T')[0],
@@ -40,6 +41,10 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const [result, setResult] = useState<EstimationResult | null>(null)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
+    // Compute snapshot key for current inputs
+    const currentSnapshot = JSON.stringify({ patient, history })
+    const isUpToDate = savedRuns.length > 0 && lastCalculatedSnapshot === currentSnapshot
+
     useEffect(() => {
         const fetchData = async () => {
             const { data: { user } } = await supabase.auth.getUser()
@@ -52,15 +57,17 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 .eq('user_id', user.id)
                 .single()
 
+            let loadedPatient = patient
             if (profileData) {
-                setPatient({
+                loadedPatient = {
                     birthYear: profileData.birth_year,
                     heightCm: profileData.height_cm,
                     sex: profileData.sex as 'male' | 'female',
                     targetTsh: profileData.target_tsh,
                     thyroidStatus: profileData.thyroid_status as ThyroidStatus,
                     isHashimotos: profileData.is_hashimotos,
-                })
+                }
+                setPatient(loadedPatient)
             }
 
             // Load Labs
@@ -70,24 +77,24 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 .eq('user_id', user.id)
                 .order('date', { ascending: true })
 
+            let loadedHistory: LabRecord[] = []
             if (labData) {
-                setHistory(
-                    labData.map((r) => ({
-                        id: r.id,
-                        date: r.date,
-                        weightKg: r.weight_kg,
-                        lbmMethod: (r.lbm_method || 'waist') as LbmMethod,
-                        waistCm: r.waist_cm,
-                        dexaLbmKg: r.dexa_lbm_kg,
-                        dailyDoseMcg: r.daily_dose_mcg,
-                        tshMeasured: r.tsh_measured,
-                        freeT4: r.free_t4,
-                        freeT3: r.free_t3,
-                    }))
-                )
+                loadedHistory = labData.map((r) => ({
+                    id: r.id,
+                    date: r.date,
+                    weightKg: r.weight_kg,
+                    lbmMethod: (r.lbm_method || 'waist') as LbmMethod,
+                    waistCm: r.waist_cm,
+                    dexaLbmKg: r.dexa_lbm_kg,
+                    dailyDoseMcg: r.daily_dose_mcg,
+                    tshMeasured: r.tsh_measured,
+                    freeT4: r.free_t4,
+                    freeT3: r.free_t3,
+                }))
+                setHistory(loadedHistory)
             }
 
-            // Load Saved Optimization Runs History
+            // Load Saved Runs
             const { data: runsData } = await supabase
                 .from('optimization_runs')
                 .select('*')
@@ -95,17 +102,21 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 .order('created_at', { ascending: false })
 
             if (runsData) {
-                setSavedRuns(
-                    runsData.map((r) => ({
-                        id: r.id,
-                        createdAt: r.created_at,
-                        recommendedDoseMcg: r.recommended_dose_mcg,
-                        estimatedLbmKg: r.estimated_lbm_kg,
-                        estimatedClearance: r.estimated_clearance,
-                        predictedTsh: r.predicted_tsh,
-                        calculationNote: r.calculation_note,
-                    }))
-                )
+                const loadedRuns = runsData.map((r) => ({
+                    id: r.id,
+                    createdAt: r.created_at,
+                    recommendedDoseMcg: r.recommended_dose_mcg,
+                    estimatedLbmKg: r.estimated_lbm_kg,
+                    estimatedClearance: r.estimated_clearance,
+                    predictedTsh: r.predicted_tsh,
+                    calculationNote: r.calculation_note,
+                }))
+                setSavedRuns(loadedRuns)
+
+                // Lock button if historical run already exists for current inputs
+                if (loadedRuns.length > 0) {
+                    setLastCalculatedSnapshot(JSON.stringify({ patient: loadedPatient, history: loadedHistory }))
+                }
             }
 
             setLoading(false)
@@ -177,12 +188,16 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     }
 
     const handleRunCalculator = async () => {
+        if (isUpToDate) {
+            setErrorMsg('No new or updated observations detected since the last titration optimization.')
+            return
+        }
+
         setErrorMsg(null)
         try {
             const res = calculateMapDose(patient, history)
             setResult(res)
 
-            // Save Optimization Run to Supabase History
             const { data: { user } } = await supabase.auth.getUser()
             if (user) {
                 const { data: runData } = await supabase
@@ -211,6 +226,8 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         },
                         ...savedRuns,
                     ])
+                    // Lock duplicate recalculations until history or patient baseline changes
+                    setLastCalculatedSnapshot(currentSnapshot)
                 }
             }
         } catch (err: any) {
@@ -220,7 +237,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
 
     const handleDeleteRun = async (id: string) => {
         await supabase.from('optimization_runs').delete().eq('id', id)
-        setSavedRuns(savedRuns.filter((r) => r.id !== id))
+        const updatedRuns = savedRuns.filter((r) => r.id !== id)
+        setSavedRuns(updatedRuns)
+        if (updatedRuns.length === 0) {
+            setLastCalculatedSnapshot('')
+        }
     }
 
     if (loading) {
@@ -495,11 +516,16 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 <div className="space-y-6">
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-4">
                         <h2 className="text-lg font-semibold text-emerald-300">Bayesian MAP Solver Workspace</h2>
+
                         <button
                             onClick={handleRunCalculator}
-                            className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition shadow-lg cursor-pointer"
+                            disabled={isUpToDate || history.length === 0}
+                            className={`w-full font-bold py-3 rounded-xl transition shadow-lg ${isUpToDate || history.length === 0
+                                    ? 'bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-700'
+                                    : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                                }`}
                         >
-                            Run Titration Optimization
+                            {isUpToDate ? 'Optimization Up To Date' : 'Run Titration Optimization'}
                         </button>
 
                         {errorMsg && (
@@ -540,7 +566,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         </div>
                     )}
 
-                    {/* Saved Optimization History Table */}
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-3">
                         <h2 className="text-lg font-semibold text-emerald-300">Saved Optimization History</h2>
                         {savedRuns.length === 0 ? (
