@@ -1,14 +1,20 @@
 import { PatientProfile, LabRecord, EstimationResult } from './types'
 
-const PRIOR_CLEARANCE_PER_LBM = 0.016 // L/day per kg LBM
+const PRIOR_CLEARANCE_PER_LBM = 0.016
 const PRIOR_CLEARANCE_SD = 0.004
 const SIGMA_OBS_TSH = 0.35
 
-export function calculateLbm(weightKg: number, heightCm: number, sex: 'male' | 'female'): number {
+export function computeLbm(record: LabRecord, heightCm: number, sex: 'male' | 'female'): number {
+    if (record.lbmMethod === 'dexa' && record.dexaLbmKg && record.dexaLbmKg > 0) {
+        return record.dexaLbmKg
+    }
+
+    // Waist-to-Height / Anthropometric Formula (Boer / Hume Hybrid)
+    const weight = record.weightKg
     if (sex === 'male') {
-        return Math.max(30, 0.407 * weightKg + 0.267 * heightCm - 19.2)
+        return Math.max(30, 0.407 * weight + 0.267 * heightCm - 19.2)
     } else {
-        return Math.max(25, 0.183 * weightKg + 0.456 * heightCm - 35.27)
+        return Math.max(25, 0.183 * weight + 0.456 * heightCm - 35.27)
     }
 }
 
@@ -18,11 +24,7 @@ function predictTsh(totalExogenousDoseMcg: number, clearanceLPerDay: number): nu
     return Math.max(0.01, tsh)
 }
 
-function objectiveFunction(
-    cl: number,
-    popClearance: number,
-    history: LabRecord[]
-): number {
+function objectiveFunction(cl: number, popClearance: number, history: LabRecord[]): number {
     const priorPenalty = Math.pow(cl - popClearance, 2) / Math.pow(PRIOR_CLEARANCE_SD, 2)
     let likelihoodPenalty = 0
 
@@ -34,41 +36,34 @@ function objectiveFunction(
     return priorPenalty + likelihoodPenalty
 }
 
-export function calculateMapDose(
-    patient: PatientProfile,
-    history: LabRecord[]
-): EstimationResult {
+export function calculateMapDose(patient: PatientProfile, history: LabRecord[]): EstimationResult {
     if (history.length === 0) {
         throw new Error('Please add at least one lab observation record.')
     }
 
     const latestRecord = history[history.length - 1]
-    const lbm = calculateLbm(latestRecord.weightKg, patient.heightCm, patient.sex)
+    const lbm = computeLbm(latestRecord, patient.heightCm, patient.sex)
     const popClearance = lbm * PRIOR_CLEARANCE_PER_LBM
     const activeRecords = history.filter(r => r.dailyDoseMcg > 0)
 
-    // UNTREATED / ZERO-DOSE PATIENT LOGIC
     if (activeRecords.length === 0) {
         let startingDose = 0
         let note = ''
 
         if (patient.thyroidStatus === 'total_thyroidectomy') {
-            // Complete ablation: full replacement requirement (~1.6 mcg/kg LBM)
             startingDose = Math.round((1.6 * lbm) / 12.5) * 12.5
-            note = 'Total thyroidectomy detected. Initiating full replacement dosing (1.6 mcg/kg LBM).'
+            note = 'Total thyroidectomy detected. Full replacement dosing (1.6 mcg/kg LBM).'
         } else if (patient.thyroidStatus === 'partial_resection') {
-            // Partial resection: ~50-70% calculated replacement depending on TSH severity
             const factor = latestRecord.tshMeasured > 10 ? 1.2 : 0.8
             startingDose = Math.round((factor * lbm) / 12.5) * 12.5
-            note = 'Partial thyroidectomy detected. Initiating partial replacement dosing.'
+            note = 'Partial thyroidectomy detected. Partial replacement dosing.'
         } else {
-            // Intact Gland (e.g. Hashimoto's or primary hypothyroidism)
             if (latestRecord.tshMeasured < 10) {
-                startingDose = 25 // Conservative start for subclinical hypothyroidism
+                startingDose = 25
                 note = 'Intact thyroid with mild TSH elevation. Conservative 25 mcg starting dose.'
             } else {
                 startingDose = Math.round((0.8 * lbm) / 12.5) * 12.5
-                note = 'Intact thyroid with marked TSH elevation. Starting partial replacement dose.'
+                note = 'Intact thyroid with marked TSH elevation. Partial replacement dose.'
             }
         }
 
@@ -83,7 +78,6 @@ export function calculateMapDose(
         }
     }
 
-    // ACTIVE TITRATION OPTIMIZATION VIA MAP BAYESIAN SOLVER
     let a = popClearance * 0.3
     let b = popClearance * 2.5
     const phi = (1 + Math.sqrt(5)) / 2
