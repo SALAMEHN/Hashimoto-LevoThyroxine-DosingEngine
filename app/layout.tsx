@@ -1,5 +1,7 @@
+import './globals.css'
+
 export const metadata = {
-    title: 'Thyroid Engine',
+    title: 'Hashimoto L-Thyroxine Dosing Engine',
     description: 'MAP Bayesian Levothyroxine Titration System',
 }
 
@@ -10,7 +12,7 @@ export default function RootLayout({
 }) {
     return (
         <html lang="en">
-            <body style={{ margin: 0, padding: 0, backgroundColor: '#030712', color: '#ffffff', fontFamily: 'system-ui, sans-serif' }}>
+            <body className="bg-gray-950 text-white min-h-screen">
                 {children}
             </body>
         </html>

@@ -1,25 +1,26 @@
 import { PatientProfile, LabRecord, EstimationResult } from './types'
 
-// Population Priors for Levothyroxine (LT4)
-const PRIOR_CLEARANCE_MEAN = 0.055 // L/day per kg
+const PRIOR_CLEARANCE_PER_LBM_MEAN = 0.08 // L/day per kg LBM
 const PRIOR_CLEARANCE_SD = 0.015
-const SIGMA_OBS_TSH = 0.4 // Measurement noise standard deviation on log TSH scale
+const SIGMA_OBS_TSH = 0.4
 
 /**
- * Calculates steady-state TSH given daily dose (mcg/day) and individual clearance CL (L/day)
- * Model: TSH_ss = TSH_baseline * exp(-alpha * (Dose / CL))
+ * Calculates Lean Body Mass (LBM) using Boer's Formula
  */
+export function calculateLbm(weightKg: number, heightCm: number, sex: 'male' | 'female'): number {
+    if (sex === 'male') {
+        return Math.max(30, 0.407 * weightKg + 0.267 * heightCm - 19.2)
+    } else {
+        return Math.max(25, 0.183 * weightKg + 0.456 * heightCm - 35.27)
+    }
+}
+
 function predictTsh(dailyDoseMcg: number, clearanceLPerDay: number): number {
     const t4Concentration = dailyDoseMcg / clearanceLPerDay
-    // Empirical PK/PD inverse log-linear response model
     const tsh = 12.0 * Math.exp(-0.018 * t4Concentration)
     return Math.max(0.01, tsh)
 }
 
-/**
- * MAP Objective Function to minimize:
- * \Phi(CL) = \frac{(CL - \mu_{CL})^2}{\sigma_{prior}^2} + \sum \frac{(\ln(TSH_{obs}) - \ln(TSH_{pred}))^2}{\sigma_{obs}^2}
- */
 function objectiveFunction(
     cl: number,
     popClearance: number,
@@ -36,14 +37,12 @@ function objectiveFunction(
     return priorPenalty + likelihoodPenalty
 }
 
-/**
- * Golden Section Search 1D Minimizer for MAP Clearance Estimation
- */
 export function calculateMapDose(
     patient: PatientProfile,
     history: LabRecord[]
 ): EstimationResult {
-    const popClearance = patient.weightKg * PRIOR_CLEARANCE_MEAN
+    const lbm = calculateLbm(patient.weightKg, patient.heightCm, patient.sex)
+    const popClearance = lbm * PRIOR_CLEARANCE_PER_LBM_MEAN
 
     let a = popClearance * 0.2
     let b = popClearance * 3.0
@@ -72,13 +71,11 @@ export function calculateMapDose(
     }
 
     const optimalCL = (a + b) / 2
-
-    // Calculate recommended dose to hit target TSH
-    // TSH_target = 12 * exp(-0.018 * (Dose / CL)) => Dose = -ln(TSH_target / 12) * CL / 0.018
     const targetDoseRaw = (-Math.log(patient.targetTsh / 12.0) * optimalCL) / 0.018
     const recommendedDoseMcg = Math.max(25, Math.min(300, Math.round(targetDoseRaw / 12.5) * 12.5))
 
     return {
+        leanBodyMassKg: Number(lbm.toFixed(1)),
         individualClearance: Number(optimalCL.toFixed(4)),
         recommendedDoseMcg,
         predictedTsh: Number(predictTsh(recommendedDoseMcg, optimalCL).toFixed(2)),

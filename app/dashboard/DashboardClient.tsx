@@ -1,14 +1,21 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
 import { calculateMapDose } from '@/lib/engine/solver'
 import { PatientProfile, LabRecord, EstimationResult } from '@/lib/engine/types'
 
 export default function DashboardClient({ userEmail }: { userEmail: string }) {
+    const router = useRouter()
+    const supabase = createClient()
+
     const [patient, setPatient] = useState<PatientProfile>({
-        weightKg: 70,
-        age: 40,
-        sex: 'female',
+        weightKg: 110,
+        heightCm: 180,
+        waistCm: 100,
+        age: 35,
+        sex: 'male',
         targetTsh: 1.5,
     })
 
@@ -19,6 +26,11 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const [newDose, setNewDose] = useState<number>(100)
     const [newTsh, setNewTsh] = useState<number>(5.2)
     const [result, setResult] = useState<EstimationResult | null>(null)
+
+    const handleSignOut = async () => {
+        await supabase.auth.signOut()
+        router.push('/login')
+    }
 
     const handleAddRecord = () => {
         setHistory([
@@ -47,29 +59,75 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                     <h1 className="text-2xl font-bold text-emerald-400">Thyroid Engine Dashboard</h1>
                     <p className="text-xs text-gray-400 font-mono">User: {userEmail}</p>
                 </div>
+                <button
+                    onClick={handleSignOut}
+                    className="bg-gray-800 hover:bg-gray-700 text-xs text-red-400 border border-gray-700 px-3 py-1.5 rounded transition"
+                >
+                    Sign Out
+                </button>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
-                    <h2 className="text-lg font-semibold text-emerald-300">Patient Profile</h2>
-                    <div>
-                        <label className="block text-xs text-gray-400 mb-1">Weight (kg)</label>
-                        <input
-                            type="number"
-                            value={patient.weightKg}
-                            onChange={(e) => setPatient({ ...patient, weightKg: parseFloat(e.target.value) || 0 })}
-                            className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-xs text-gray-400 mb-1">Target TSH (mIU/L)</label>
-                        <input
-                            type="number"
-                            step="0.1"
-                            value={patient.targetTsh}
-                            onChange={(e) => setPatient({ ...patient, targetTsh: parseFloat(e.target.value) || 0 })}
-                            className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
-                        />
+                    <h2 className="text-lg font-semibold text-emerald-300">Patient Anthropometrics</h2>
+                    <div className="grid grid-cols-2 gap-3">
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Weight (kg)</label>
+                            <input
+                                type="number"
+                                value={patient.weightKg}
+                                onChange={(e) => setPatient({ ...patient, weightKg: parseFloat(e.target.value) || 0 })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Height (cm)</label>
+                            <input
+                                type="number"
+                                value={patient.heightCm}
+                                onChange={(e) => setPatient({ ...patient, heightCm: parseFloat(e.target.value) || 0 })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Waist (cm)</label>
+                            <input
+                                type="number"
+                                value={patient.waistCm || ''}
+                                onChange={(e) => setPatient({ ...patient, waistCm: parseFloat(e.target.value) || 0 })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Age (yrs)</label>
+                            <input
+                                type="number"
+                                value={patient.age}
+                                onChange={(e) => setPatient({ ...patient, age: parseFloat(e.target.value) || 0 })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Sex</label>
+                            <select
+                                value={patient.sex}
+                                onChange={(e) => setPatient({ ...patient, sex: e.target.value as 'male' | 'female' })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value="male">Male</option>
+                                <option value="female">Female</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Target TSH (mIU/L)</label>
+                            <input
+                                type="number"
+                                step="0.1"
+                                value={patient.targetTsh}
+                                onChange={(e) => setPatient({ ...patient, targetTsh: parseFloat(e.target.value) || 0 })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            />
+                        </div>
                     </div>
                 </div>
 
@@ -98,7 +156,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                     </div>
                     <button
                         onClick={handleAddRecord}
-                        className="w-full bg-gray-800 hover:bg-gray-700 text-sm py-2 rounded transition text-gray-200 font-medium"
+                        className="w-full bg-gray-800 hover:bg-gray-700 text-sm py-2 rounded transition text-gray-200 font-medium cursor-pointer"
                     >
                         + Add Entry
                     </button>
@@ -138,17 +196,21 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
             {result && (
                 <div className="border border-emerald-500/30 bg-emerald-950/20 rounded-xl p-6 space-y-4">
                     <h2 className="text-xl font-bold text-emerald-400">Optimization Result</h2>
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-center">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
                         <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
                             <div className="text-xs text-gray-400">Recommended Dose</div>
                             <div className="text-2xl font-extrabold text-emerald-400">{result.recommendedDoseMcg} mcg</div>
+                        </div>
+                        <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
+                            <div className="text-xs text-gray-400">Estimated LBM</div>
+                            <div className="text-xl font-bold text-white">{result.leanBodyMassKg} kg</div>
                         </div>
                         <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
                             <div className="text-xs text-gray-400">Individual Clearance</div>
                             <div className="text-xl font-bold text-white">{result.individualClearance} L/day</div>
                         </div>
                         <div className="bg-gray-950 p-4 rounded-lg border border-gray-800">
-                            <div className="text-xs text-gray-400">Predicted Steady-State TSH</div>
+                            <div className="text-xs text-gray-400">Predicted TSH</div>
                             <div className="text-xl font-bold text-white">{result.predictedTsh} mIU/L</div>
                         </div>
                     </div>
