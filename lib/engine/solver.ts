@@ -1,13 +1,9 @@
 import { PatientProfile, LabRecord, EstimationResult } from './types'
 
-// Physiological LT4 Clearance Prior: ~0.016 L/day per kg LBM (~1.15 L/day for 70kg LBM)
-const PRIOR_CLEARANCE_PER_LBM = 0.016
+const PRIOR_CLEARANCE_PER_LBM = 0.016 // L/day per kg LBM
 const PRIOR_CLEARANCE_SD = 0.004
 const SIGMA_OBS_TSH = 0.35
 
-/**
- * Boer Formula for Lean Body Mass (LBM)
- */
 export function calculateLbm(weightKg: number, heightCm: number, sex: 'male' | 'female'): number {
     if (sex === 'male') {
         return Math.max(30, 0.407 * weightKg + 0.267 * heightCm - 19.2)
@@ -16,14 +12,8 @@ export function calculateLbm(weightKg: number, heightCm: number, sex: 'male' | '
     }
 }
 
-/**
- * Log-linear TSH steady-state response model
- * Css = Dose / CL (mcg/L)
- * TSH_ss = TSH_0 * exp(-gamma * Css)
- */
-function predictTsh(dailyDoseMcg: number, clearanceLPerDay: number): number {
-    if (dailyDoseMcg === 0) return 25.0
-    const css = dailyDoseMcg / clearanceLPerDay
+function predictTsh(totalExogenousDoseMcg: number, clearanceLPerDay: number): number {
+    const css = totalExogenousDoseMcg / clearanceLPerDay
     const tsh = 28.0 * Math.exp(-0.035 * css)
     return Math.max(0.01, tsh)
 }
@@ -34,11 +24,9 @@ function objectiveFunction(
     history: LabRecord[]
 ): number {
     const priorPenalty = Math.pow(cl - popClearance, 2) / Math.pow(PRIOR_CLEARANCE_SD, 2)
-
     let likelihoodPenalty = 0
-    const activeRecords = history.filter(r => r.dailyDoseMcg > 0)
 
-    for (const record of activeRecords) {
+    for (const record of history) {
         const tshPred = predictTsh(record.dailyDoseMcg, cl)
         likelihoodPenalty += Math.pow(Math.log(record.tshMeasured) - Math.log(tshPred), 2) / Math.pow(SIGMA_OBS_TSH, 2)
     }
@@ -51,30 +39,51 @@ export function calculateMapDose(
     history: LabRecord[]
 ): EstimationResult {
     if (history.length === 0) {
-        throw new Error('Please add at least one lab record with weight and TSH.')
+        throw new Error('Please add at least one lab observation record.')
     }
 
     const latestRecord = history[history.length - 1]
     const lbm = calculateLbm(latestRecord.weightKg, patient.heightCm, patient.sex)
     const popClearance = lbm * PRIOR_CLEARANCE_PER_LBM
-
     const activeRecords = history.filter(r => r.dailyDoseMcg > 0)
 
-    // Fallback for treatment-naive or zero-dose patients: replacement dosing = 1.6 mcg/kg LBM
+    // UNTREATED / ZERO-DOSE PATIENT LOGIC
     if (activeRecords.length === 0) {
-        const empiricalDose = Math.round((1.6 * lbm) / 12.5) * 12.5
+        let startingDose = 0
+        let note = ''
+
+        if (patient.thyroidStatus === 'total_thyroidectomy') {
+            // Complete ablation: full replacement requirement (~1.6 mcg/kg LBM)
+            startingDose = Math.round((1.6 * lbm) / 12.5) * 12.5
+            note = 'Total thyroidectomy detected. Initiating full replacement dosing (1.6 mcg/kg LBM).'
+        } else if (patient.thyroidStatus === 'partial_resection') {
+            // Partial resection: ~50-70% calculated replacement depending on TSH severity
+            const factor = latestRecord.tshMeasured > 10 ? 1.2 : 0.8
+            startingDose = Math.round((factor * lbm) / 12.5) * 12.5
+            note = 'Partial thyroidectomy detected. Initiating partial replacement dosing.'
+        } else {
+            // Intact Gland (e.g. Hashimoto's or primary hypothyroidism)
+            if (latestRecord.tshMeasured < 10) {
+                startingDose = 25 // Conservative start for subclinical hypothyroidism
+                note = 'Intact thyroid with mild TSH elevation. Conservative 25 mcg starting dose.'
+            } else {
+                startingDose = Math.round((0.8 * lbm) / 12.5) * 12.5
+                note = 'Intact thyroid with marked TSH elevation. Starting partial replacement dose.'
+            }
+        }
+
         return {
             latestWeightKg: latestRecord.weightKg,
             leanBodyMassKg: Number(lbm.toFixed(1)),
             individualClearance: Number(popClearance.toFixed(4)),
-            recommendedDoseMcg: empiricalDose,
-            predictedTsh: Number(predictTsh(empiricalDose, popClearance).toFixed(2)),
+            recommendedDoseMcg: startingDose,
+            predictedTsh: Number(predictTsh(startingDose, popClearance).toFixed(2)),
             objectiveValue: 0,
-            calculationNote: 'Zero active dosage history detected. Using baseline replacement dosing (1.6 mcg/kg LBM).'
+            calculationNote: note
         }
     }
 
-    // Golden Section Search 1D Minimizer for MAP Clearance
+    // ACTIVE TITRATION OPTIMIZATION VIA MAP BAYESIAN SOLVER
     let a = popClearance * 0.3
     let b = popClearance * 2.5
     const phi = (1 + Math.sqrt(5)) / 2
@@ -102,8 +111,6 @@ export function calculateMapDose(
     }
 
     const optimalCL = (a + b) / 2
-
-    // Calculate recommended dose to reach target TSH
     const targetCss = -Math.log(patient.targetTsh / 28.0) / 0.035
     const targetDoseRaw = targetCss * optimalCL
     const recommendedDoseMcg = Math.max(25, Math.min(275, Math.round(targetDoseRaw / 12.5) * 12.5))
@@ -115,6 +122,6 @@ export function calculateMapDose(
         recommendedDoseMcg,
         predictedTsh: Number(predictTsh(recommendedDoseMcg, optimalCL).toFixed(2)),
         objectiveValue: Number(objectiveFunction(optimalCL, popClearance, history).toFixed(4)),
-        calculationNote: 'MAP Bayesian optimization complete based on longitudinal lab history.'
+        calculationNote: `MAP Bayesian optimization complete (${patient.thyroidStatus}, ${patient.isHashimotos ? 'Hashimoto+' : 'Non-autoimmune'}).`
     }
 }

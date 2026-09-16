@@ -1,36 +1,29 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { calculateMapDose } from '@/lib/engine/solver'
-import { PatientProfile, LabRecord, EstimationResult } from '@/lib/engine/types'
+import { PatientProfile, LabRecord, EstimationResult, ThyroidStatus } from '@/lib/engine/types'
 
 export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const router = useRouter()
     const supabase = createClient()
 
     const [activeTab, setActiveTab] = useState<'profile' | 'history' | 'calculator'>('profile')
+    const [loading, setLoading] = useState(true)
 
     const [patient, setPatient] = useState<PatientProfile>({
         birthYear: 1990,
         heightCm: 180,
         sex: 'male',
         targetTsh: 1.5,
+        thyroidStatus: 'intact',
+        isHashimotos: false,
     })
 
-    const [history, setHistory] = useState<LabRecord[]>([
-        {
-            id: '1',
-            date: new Date().toISOString().split('T')[0],
-            weightKg: 110,
-            waistCm: 100,
-            dailyDoseMcg: 100,
-            tshMeasured: 5.2,
-        },
-    ])
-
-    const [newEntry, setNewEntry] = useState<Omit<LabRecord, 'id'>>({
+    const [history, setHistory] = useState<LabRecord[]>([])
+    const [newEntry, setNewEntry] = useState({
         date: new Date().toISOString().split('T')[0],
         weightKg: 110,
         waistCm: 100,
@@ -41,20 +34,112 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const [result, setResult] = useState<EstimationResult | null>(null)
     const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
+    // Fetch initial profile & labs from Supabase
+    useEffect(() => {
+        const fetchData = async () => {
+            const { data: { user } } = await supabase.auth.getUser()
+            if (!user) return
+
+            // Load Profile
+            const { data: profileData } = await supabase
+                .from('patient_profiles')
+                .select('*')
+                .eq('user_id', user.id)
+                .single()
+
+            if (profileData) {
+                setPatient({
+                    birthYear: profileData.birth_year,
+                    heightCm: profileData.height_cm,
+                    sex: profileData.sex as 'male' | 'female',
+                    targetTsh: profileData.target_tsh,
+                    thyroidStatus: profileData.thyroid_status as ThyroidStatus,
+                    isHashimotos: profileData.is_hashimotos,
+                })
+            }
+
+            // Load Labs
+            const { data: labData } = await supabase
+                .from('lab_records')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('date', { ascending: true })
+
+            if (labData) {
+                setHistory(
+                    labData.map((r) => ({
+                        id: r.id,
+                        date: r.date,
+                        weightKg: r.weight_kg,
+                        waistCm: r.waist_cm,
+                        dailyDoseMcg: r.daily_dose_mcg,
+                        tshMeasured: r.tsh_measured,
+                    }))
+                )
+            }
+            setLoading(false)
+        }
+
+        fetchData()
+    }, [])
+
+    const handleSaveProfile = async () => {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
+
+        await supabase.from('patient_profiles').upsert({
+            user_id: user.id,
+            birth_year: patient.birthYear,
+            height_cm: patient.heightCm,
+            sex: patient.sex,
+            target_tsh: patient.targetTsh,
+            thyroid_status: patient.thyroidStatus,
+            is_hashimotos: patient.isHashimotos,
+            updated_at: new Date().toISOString(),
+        })
+        alert('Baseline metrics saved successfully!')
+    }
+
+    const handleAddRecord = async () => {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (!user) return
+
+        const { data, error } = await supabase
+            .from('lab_records')
+            .insert({
+                user_id: user.id,
+                date: newEntry.date,
+                weight_kg: newEntry.weightKg,
+                waist_cm: newEntry.waistCm,
+                daily_dose_mcg: newEntry.dailyDoseMcg,
+                tsh_measured: newEntry.tshMeasured,
+            })
+            .select()
+            .single()
+
+        if (data) {
+            setHistory([
+                ...history,
+                {
+                    id: data.id,
+                    date: data.date,
+                    weightKg: data.weight_kg,
+                    waistCm: data.waist_cm,
+                    dailyDoseMcg: data.daily_dose_mcg,
+                    tshMeasured: data.tsh_measured,
+                },
+            ])
+        }
+    }
+
+    const handleRemoveRecord = async (id: string) => {
+        await supabase.from('lab_records').delete().eq('id', id)
+        setHistory(history.filter((r) => r.id !== id))
+    }
+
     const handleSignOut = async () => {
         await supabase.auth.signOut()
         router.push('/login')
-    }
-
-    const handleAddRecord = () => {
-        setHistory([
-            ...history,
-            { ...newEntry, id: Math.random().toString(36).substring(2, 9) },
-        ])
-    }
-
-    const handleRemoveRecord = (id: string) => {
-        setHistory(history.filter((r) => r.id !== id))
     }
 
     const handleRunCalculator = () => {
@@ -65,6 +150,10 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         } catch (err: any) {
             setErrorMsg(err.message || 'Calculation error.')
         }
+    }
+
+    if (loading) {
+        return <div className="text-center p-10 text-emerald-400">Loading Patient Records...</div>
     }
 
     return (
@@ -82,7 +171,6 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 </button>
             </div>
 
-            {/* Navigation Tabs */}
             <div className="flex border-b border-gray-800 gap-2">
                 <button
                     onClick={() => setActiveTab('profile')}
@@ -113,13 +201,9 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 </button>
             </div>
 
-            {/* Tab 1: Static Patient Profile */}
             {activeTab === 'profile' && (
-                <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-4">
+                <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-5">
                     <h2 className="text-lg font-semibold text-emerald-300">Immutable Baseline Metrics</h2>
-                    <p className="text-xs text-gray-400">
-                        These physical parameters change rarely and serve as standard baseline inputs.
-                    </p>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div>
@@ -164,11 +248,42 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                 className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
                             />
                         </div>
+
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Thyroid Gland Status</label>
+                            <select
+                                value={patient.thyroidStatus}
+                                onChange={(e) => setPatient({ ...patient, thyroidStatus: e.target.value as ThyroidStatus })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value="intact">Intact Gland</option>
+                                <option value="partial_resection">Partial Resection / Subtotal</option>
+                                <option value="total_thyroidectomy">Total Thyroidectomy / Ablated</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs text-gray-400 mb-1">Hashimoto's Autoimmunity</label>
+                            <select
+                                value={patient.isHashimotos ? 'true' : 'false'}
+                                onChange={(e) => setPatient({ ...patient, isHashimotos: e.target.value === 'true' })}
+                                className="w-full bg-gray-950 border border-gray-800 rounded p-2.5 text-sm text-white focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value="false">Negative / Unknown</option>
+                                <option value="true">Confirmed Positive (Anti-TPO/TG)</option>
+                            </select>
+                        </div>
                     </div>
+
+                    <button
+                        onClick={handleSaveProfile}
+                        className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-lg transition"
+                    >
+                        Save Baseline Metrics
+                    </button>
                 </div>
             )}
 
-            {/* Tab 2: Dynamic Lab & Weight History */}
             {activeTab === 'history' && (
                 <div className="space-y-6">
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-4">
@@ -237,7 +352,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-5 space-y-3">
                         <h2 className="text-lg font-semibold text-emerald-300">Longitudinal Lab History</h2>
                         {history.length === 0 ? (
-                            <p className="text-xs text-gray-500">No observations recorded.</p>
+                            <p className="text-xs text-gray-500">No saved observations found in database.</p>
                         ) : (
                             <div className="space-y-2">
                                 {history.map((record) => (
@@ -264,15 +379,10 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 </div>
             )}
 
-            {/* Tab 3: Calculation Engine */}
             {activeTab === 'calculator' && (
                 <div className="space-y-6">
                     <div className="border border-gray-800 bg-gray-900 rounded-xl p-6 space-y-4">
                         <h2 className="text-lg font-semibold text-emerald-300">Bayesian MAP Solver Workspace</h2>
-                        <p className="text-xs text-gray-400">
-                            Computes individual thyroxine clearance ($CL$) using Lean Body Mass and historical dose-response pairs.
-                        </p>
-
                         <button
                             onClick={handleRunCalculator}
                             className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition shadow-lg cursor-pointer"

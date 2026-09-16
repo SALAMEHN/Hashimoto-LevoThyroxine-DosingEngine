@@ -1,8 +1,12 @@
+export type ThyroidStatus = 'intact' | 'partial_resection' | 'total_thyroidectomy'
+
 export interface PatientProfile {
     birthYear: number
     heightCm: number
     sex: 'male' | 'female'
     targetTsh: number
+    thyroidStatus: ThyroidStatus
+    isHashimotos: boolean
 }
 
 export interface LabRecord {
