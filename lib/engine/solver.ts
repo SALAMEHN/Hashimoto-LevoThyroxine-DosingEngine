@@ -5,11 +5,22 @@ const PRIOR_CLEARANCE_SD = 0.004
 const SIGMA_OBS_TSH = 0.35
 
 export function computeLbm(record: LabRecord, heightCm: number, sex: 'male' | 'female'): number {
+    // 1. Direct DEXA Scan Input
     if (record.lbmMethod === 'dexa' && record.dexaLbmKg && record.dexaLbmKg > 0) {
         return record.dexaLbmKg
     }
 
-    // Waist-to-Height / Anthropometric Formula (Boer / Hume Hybrid)
+    // 2. Relative Fat Mass (RFM) via Waist-to-Height Ratio
+    if (record.lbmMethod === 'waist' && record.waistCm && record.waistCm > 0) {
+        const rfmFatPercent = sex === 'male'
+            ? Math.max(5, Math.min(60, 64 - 20 * (heightCm / record.waistCm)))
+            : Math.max(5, Math.min(60, 76 - 20 * (heightCm / record.waistCm)))
+
+        const fatMassKg = record.weightKg * (rfmFatPercent / 100)
+        return Number((record.weightKg - fatMassKg).toFixed(1))
+    }
+
+    // 3. Fallback Anthropometric (Boer Formula)
     const weight = record.weightKg
     if (sex === 'male') {
         return Math.max(30, 0.407 * weight + 0.267 * heightCm - 19.2)
