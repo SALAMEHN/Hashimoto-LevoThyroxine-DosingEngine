@@ -220,6 +220,16 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                         )
                     )
                 }
+
+                // Delete stale optimization run for this date since lab data changed
+                const staleRun = savedRuns.find((run) =>
+                    run.calculationNote.includes(`[Log Date: ${existingRecordForDate.date}]`)
+                )
+                if (staleRun) {
+                    await supabase.from('optimization_runs').delete().eq('id', staleRun.id)
+                    setSavedRuns(savedRuns.filter((r) => r.id !== staleRun.id))
+                    setLastCalculatedSnapshot('')
+                }
             } else {
                 // 3b. Insert new record into database
                 const { data, error } = await supabase
@@ -291,15 +301,34 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
         window.scrollTo({ top: 0, behavior: 'smooth' })
     }
 
-    // Handler: Delete lab observation record from database and state
+    // Handler: Delete lab observation record and cascade-delete its linked optimization run
     const handleRemoveRecord = async (id: string) => {
         setErrorMsg(null)
+
+        // Find the record before deletion to get its date for cascade lookup
+        const recordToDelete = history.find((r) => r.id === id)
+
         const { error } = await supabase.from('lab_records').delete().eq('id', id)
         if (error) {
             setErrorMsg(`Failed to delete record: ${error.message}`)
             return
         }
         setHistory(history.filter((r) => r.id !== id))
+
+        // Cascade: delete the optimization run linked to this lab record's date
+        if (recordToDelete) {
+            const associatedRun = savedRuns.find((run) =>
+                run.calculationNote.includes(`[Log Date: ${recordToDelete.date}]`)
+            )
+            if (associatedRun) {
+                await supabase.from('optimization_runs').delete().eq('id', associatedRun.id)
+                const updatedRuns = savedRuns.filter((r) => r.id !== associatedRun.id)
+                setSavedRuns(updatedRuns)
+                if (updatedRuns.length === 0) {
+                    setLastCalculatedSnapshot('')
+                }
+            }
+        }
     }
 
     // Handler: Execute Bayesian MAP solver optimization run
@@ -392,16 +421,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     }
 
     // Handler: Delete saved optimization run
-    const handleDeleteRun = async (id: string, note: string) => {
-        const logDateMatch = note.match(/\[Log Date: ([\d-]+)\]/)
-        const associatedLogDate = logDateMatch ? logDateMatch[1] : null
-        const isLogActive = associatedLogDate ? history.some((r) => r.date === associatedLogDate) : false
-
-        if (isLogActive) {
-            alert(`Cannot delete optimization run for ${associatedLogDate} while its corresponding lab entry remains in history. Delete or modify the lab record first.`)
-            return
-        }
-
+    const handleDeleteRun = async (id: string) => {
         const { error } = await supabase.from('optimization_runs').delete().eq('id', id)
         if (error) {
             setErrorMsg(`Failed to delete run: ${error.message}`)
@@ -814,12 +834,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                             <p className="text-xs text-gray-500">No saved optimization runs found in database.</p>
                         ) : (
                             <div className="space-y-2">
-                                {savedRuns.map((run) => {
-                                    const logDateMatch = run.calculationNote.match(/\[Log Date: ([\d-]+)\]/)
-                                    const associatedLogDate = logDateMatch ? logDateMatch[1] : null
-                                    const isLogActive = associatedLogDate ? history.some((r) => r.date === associatedLogDate) : false
-
-                                    return (
+                                {savedRuns.map((run) => (
                                         <div key={run.id} className="bg-gray-950 p-3 rounded border border-gray-800 text-xs flex justify-between items-center">
                                             <div>
                                                 <span className="text-gray-500 mr-2">{new Date(run.createdAt).toLocaleString()}</span>
@@ -833,23 +848,15 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                                                 <div className="text-[10px] text-emerald-400/80 mt-1 font-mono">{run.calculationNote}</div>
                                             </div>
 
-                                            <div className="flex items-center gap-2 shrink-0">
-                                                {isLogActive ? (
-                                                    <span className="text-[10px] bg-gray-900 border border-gray-700 text-gray-400 px-2 py-1 rounded cursor-not-allowed">
-                                                        Locked (Log Active)
-                                                    </span>
-                                                ) : (
-                                                    <button
-                                                        onClick={() => handleDeleteRun(run.id, run.calculationNote)}
-                                                        className="text-xs text-red-400 hover:text-red-300 cursor-pointer"
-                                                    >
-                                                        Delete
-                                                    </button>
-                                                )}
-                                            </div>
+                                            <button
+                                                onClick={() => handleDeleteRun(run.id)}
+                                                className="text-xs text-red-400 hover:text-red-300 cursor-pointer shrink-0"
+                                            >
+                                                Delete
+                                            </button>
                                         </div>
-                                    )
-                                })}
+                                    ))}
+
                             </div>
                         )}
                     </div>
