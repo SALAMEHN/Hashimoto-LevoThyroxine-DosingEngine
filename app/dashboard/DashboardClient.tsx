@@ -11,7 +11,7 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
     const supabase = createClient()
 
     // Navigation and loading states
-    const [activeTab, setActiveTab] = useState<'profile' | 'history' | 'calculator'>('profile')
+    const [activeTab, setActiveTab] = useState<'profile' | 'history' | 'calculator' | 'manual'>('profile')
     const [loading, setLoading] = useState(true)
 
     // Patient baseline configuration state
@@ -481,6 +481,13 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
                 >
                     3. Bayesian Engine ({savedRuns.length})
                 </button>
+                <button
+                    onClick={() => setActiveTab('manual')}
+                    className={`px-4 py-2 text-sm font-semibold rounded-t-lg transition cursor-pointer ${activeTab === 'manual' ? 'bg-gray-900 text-emerald-400 border-t border-x border-gray-800' : 'text-gray-400'
+                        }`}
+                >
+                    4. How It Works
+                </button>
             </div>
 
             {/* Global Error Message Banner */}
@@ -859,6 +866,263 @@ export default function DashboardClient({ userEmail }: { userEmail: string }) {
 
                             </div>
                         )}
+                    </div>
+                </div>
+            )}
+            {/* Tab 4: How It Works — Solver Manual */}
+            {activeTab === 'manual' && (
+                <div className="space-y-6 text-gray-300 text-sm leading-relaxed">
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h2 className="text-xl font-bold text-emerald-400 mb-4">How the Dosing Engine Works</h2>
+                        <p className="text-gray-400 mb-4">
+                            This tool uses a <strong className="text-white">mechanistic pharmacokinetic / pharmacodynamic (PK/PD) model</strong> combined with
+                            <strong className="text-white"> Bayesian Maximum A Posteriori (MAP) estimation</strong> to recommend individualized levothyroxine doses.
+                            Unlike simple weight-based rules, it learns your body&apos;s unique response to medication across each titration cycle.
+                        </p>
+                    </div>
+
+                    {/* Section 1: The Two Core Equations */}
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-emerald-300 mb-3">1. Steady-State PK/PD Model</h3>
+                        <p className="mb-3">
+                            After ~6–8 weeks on a stable dose (4–5 elimination half-lives of T4), plasma concentrations reach a steady state.
+                            At this equilibrium, the model uses two algebraic equations:
+                        </p>
+
+                        <div className="bg-gray-950 rounded-lg p-4 font-mono text-xs space-y-3 border border-gray-800 mb-4">
+                            <div>
+                                <span className="text-emerald-400">Free T4 Equation:</span>
+                                <div className="mt-1 text-gray-200">fT4<sub>ss</sub>(D) = α · (η · D + S<sub>end</sub>) / (k<sub>e</sub> · V<sub>d</sub>)&nbsp;&nbsp;&nbsp;[ng/dL]</div>
+                            </div>
+                            <div>
+                                <span className="text-emerald-400">TSH Equation (Hill Function):</span>
+                                <div className="mt-1 text-gray-200">TSH<sub>ss</sub>(fT4) = TSH<sub>max</sub> / (1 + (fT4 / EC<sub>50</sub>)<sup>γ</sup>)&nbsp;&nbsp;&nbsp;[mIU/L]</div>
+                            </div>
+                        </div>
+
+                        <p className="text-gray-400 text-xs">
+                            The first equation models how your administered dose (D) and residual thyroid gland output (S<sub>end</sub>) combine to produce
+                            a circulating free T4 concentration. The second equation models how the pituitary gland reads that fT4 level and adjusts TSH secretion
+                            via a sigmoidal (Hill) suppression curve.
+                        </p>
+                    </div>
+
+                    {/* Section 2: Patient-Specific Parameters */}
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-emerald-300 mb-3">2. Patient-Specific Parameters (θ)</h3>
+                        <p className="mb-3">The model estimates three unknown parameters unique to each patient:</p>
+
+                        <table className="w-full text-xs border-collapse">
+                            <thead>
+                                <tr className="border-b border-gray-700">
+                                    <th className="text-left py-2 px-3 text-emerald-400">Symbol</th>
+                                    <th className="text-left py-2 px-3 text-emerald-400">Name</th>
+                                    <th className="text-left py-2 px-3 text-emerald-400">Meaning</th>
+                                    <th className="text-left py-2 px-3 text-emerald-400">Population Prior</th>
+                                </tr>
+                            </thead>
+                            <tbody className="text-gray-300">
+                                <tr className="border-b border-gray-800">
+                                    <td className="py-2 px-3 font-mono">η</td>
+                                    <td className="py-2 px-3">Absorption Efficiency</td>
+                                    <td className="py-2 px-3 text-gray-400">Fraction of the oral dose that reaches systemic circulation</td>
+                                    <td className="py-2 px-3 font-mono">0.80 (80%)</td>
+                                </tr>
+                                <tr className="border-b border-gray-800">
+                                    <td className="py-2 px-3 font-mono">S<sub>end</sub></td>
+                                    <td className="py-2 px-3">Endogenous T4 Production</td>
+                                    <td className="py-2 px-3 text-gray-400">Residual daily T4 output from remaining thyroid tissue (mcg/day)</td>
+                                    <td className="py-2 px-3 font-mono">
+                                        Intact: 40 · Partial: 15 · Total thyroidectomy: 0
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td className="py-2 px-3 font-mono">k<sub>e</sub></td>
+                                    <td className="py-2 px-3">Elimination Rate</td>
+                                    <td className="py-2 px-3 text-gray-400">First-order rate constant for T4 clearance (day⁻¹). Reflects metabolism speed.</td>
+                                    <td className="py-2 px-3 font-mono">0.10 (t½ ≈ 7 days)</td>
+                                </tr>
+                            </tbody>
+                        </table>
+
+                        <div className="mt-4 bg-gray-950 rounded-lg p-4 text-xs border border-gray-800">
+                            <span className="text-emerald-400 font-semibold">Fixed Parameters:</span>
+                            <ul className="mt-2 space-y-1 text-gray-400">
+                                <li><strong className="text-gray-300">V<sub>d</sub></strong> = 0.16 L/kg × Lean Body Mass — distribution volume, computed directly from your LBM</li>
+                                <li><strong className="text-gray-300">α</strong> = 0.014 — unit-conversion factor (free fraction × concentration units)</li>
+                                <li><strong className="text-gray-300">TSH<sub>max</sub></strong> = 100 mIU/L — maximum pituitary TSH secretion capacity</li>
+                                <li><strong className="text-gray-300">EC<sub>50</sub></strong> = 0.32 ng/dL — fT4 level at which TSH is 50% suppressed</li>
+                                <li><strong className="text-gray-300">γ</strong> = 3 — Hill coefficient controlling the steepness of TSH suppression</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    {/* Section 3: Bayesian MAP Fitting */}
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-emerald-300 mb-3">3. Bayesian MAP Parameter Estimation</h3>
+                        <p className="mb-3">
+                            Given your N historical lab records (each with a dose D<sub>i</sub>, measured TSH, and optionally fT4),
+                            the optimizer finds the θ = [η, S<sub>end</sub>, k<sub>e</sub>] that best explains all your data while staying
+                            anchored to population-average priors.
+                        </p>
+
+                        <div className="bg-gray-950 rounded-lg p-4 font-mono text-xs border border-gray-800 mb-4">
+                            <span className="text-emerald-400">Cost Function (minimized):</span>
+                            <div className="mt-2 text-gray-200">
+                                J(θ) = Σ<sub>i</sub> [ w<sub>TSH</sub> · (TSH<sub>i</sub> − TSH&#770;<sub>i</sub>)² + w<sub>fT4</sub> · (fT4<sub>i</sub> − fT4&#770;<sub>i</sub>)² ] + λ · ‖θ − θ<sub>prior</sub>‖²
+                            </div>
+                        </div>
+
+                        <ul className="space-y-2 text-xs text-gray-400">
+                            <li>
+                                <strong className="text-gray-300">Data Terms:</strong> The squared differences between your measured TSH/fT4
+                                and what the model predicts at each historical dose. This forces the model to fit your actual lab results.
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Regularization Term (λ · ‖θ − θ<sub>prior</sub>‖²):</strong> A penalty
+                                that pulls parameters toward population averages. This prevents overfitting when you have few data points
+                                (e.g., only 1 lab). As you add more labs, the data terms dominate and the model becomes increasingly personalized.
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Weights:</strong> TSH residuals carry w<sub>TSH</sub> = 1.0 (primary marker),
+                                fT4 residuals carry w<sub>fT4</sub> = 10.0 (supplementary, compensating for smaller absolute values in ng/dL).
+                            </li>
+                        </ul>
+
+                        <div className="mt-4 p-3 bg-emerald-950/30 border border-emerald-800/50 rounded-lg text-xs">
+                            <strong className="text-emerald-400">Why &quot;Bayesian&quot;?</strong>
+                            <span className="text-gray-400 ml-1">
+                                With 1 lab record, the system has 3 unknowns but only 1–2 data points. Pure curve-fitting would be underdetermined.
+                                The Bayesian prior acts as a &quot;safety net&quot; — starting from population averages and adjusting only as far as the evidence justifies.
+                                Each additional titration cycle provides more evidence, progressively personalizing the model.
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Section 4: Dose Inversion */}
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-emerald-300 mb-3">4. Optimal Dose Calculation</h3>
+                        <p className="mb-3">
+                            Once the optimizer has found your personalized θ̂, the recommended dose D* is solved analytically by inverting
+                            the steady-state equations:
+                        </p>
+
+                        <div className="bg-gray-950 rounded-lg p-4 font-mono text-xs border border-gray-800 mb-4">
+                            <span className="text-emerald-400">Step 1 — Target fT4 from target TSH:</span>
+                            <div className="mt-1 text-gray-200 ml-4">
+                                fT4<sub>target</sub> = EC<sub>50</sub> · (TSH<sub>max</sub> / TSH<sub>target</sub> − 1)<sup>1/γ</sup>
+                            </div>
+                            <div className="mt-3">
+                                <span className="text-emerald-400">Step 2 — Dose from target fT4:</span>
+                                <div className="mt-1 text-gray-200 ml-4">
+                                    D* = (k<sub>e</sub> · V<sub>d</sub> / α · fT4<sub>target</sub> − S<sub>end</sub>) / η
+                                </div>
+                            </div>
+                        </div>
+
+                        <ul className="space-y-2 text-xs text-gray-400">
+                            <li>
+                                <strong className="text-gray-300">Quantization:</strong> The raw dose D* is rounded to the nearest
+                                available tablet strength (multiples of 12.5 mcg).
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Safety Clamp:</strong> The final dose is clamped to the clinical range
+                                of 25–300 mcg/day regardless of the computed value.
+                            </li>
+                        </ul>
+                    </div>
+
+                    {/* Section 5: Output Interpretation */}
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-emerald-300 mb-3">5. Understanding the Output</h3>
+
+                        <table className="w-full text-xs border-collapse">
+                            <thead>
+                                <tr className="border-b border-gray-700">
+                                    <th className="text-left py-2 px-3 text-emerald-400">Field</th>
+                                    <th className="text-left py-2 px-3 text-emerald-400">What It Means</th>
+                                </tr>
+                            </thead>
+                            <tbody className="text-gray-300">
+                                <tr className="border-b border-gray-800">
+                                    <td className="py-2 px-3 font-semibold">Recommended Dose</td>
+                                    <td className="py-2 px-3 text-gray-400">The daily levothyroxine dose (mcg) predicted to bring your TSH to target at steady state.</td>
+                                </tr>
+                                <tr className="border-b border-gray-800">
+                                    <td className="py-2 px-3 font-semibold">Estimated LBM</td>
+                                    <td className="py-2 px-3 text-gray-400">Your lean body mass (kg), used to compute V<sub>d</sub>. Derived from DEXA, waist circumference formula, or 75% of total weight.</td>
+                                </tr>
+                                <tr className="border-b border-gray-800">
+                                    <td className="py-2 px-3 font-semibold">Estimated Clearance</td>
+                                    <td className="py-2 px-3 text-gray-400">Your individualized metabolic clearance rate (k<sub>e</sub> × V<sub>d</sub>, in L/day). Higher values mean faster T4 metabolism. Typical range: 0.5–2.0 L/day.</td>
+                                </tr>
+                                <tr className="border-b border-gray-800">
+                                    <td className="py-2 px-3 font-semibold">Predicted TSH</td>
+                                    <td className="py-2 px-3 text-gray-400">The model&apos;s forecast of your TSH 6–8 weeks after starting the recommended dose, assuming full compliance.</td>
+                                </tr>
+                                <tr>
+                                    <td className="py-2 px-3 font-semibold">Objective Value</td>
+                                    <td className="py-2 px-3 text-gray-400">The final value of J(θ̂). Lower = better fit. Values near 0 mean the model closely matches all your historical labs.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {/* Section 6: Iterative Titration */}
+                    <div className="border border-gray-800 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-emerald-300 mb-3">6. The Titration Loop</h3>
+                        <p className="mb-3">The engine is designed for iterative use across multiple titration cycles:</p>
+
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+                            <div className="bg-gray-950 rounded-lg p-3 border border-gray-800 text-center">
+                                <div className="text-emerald-400 font-bold text-lg mb-1">①</div>
+                                <strong className="text-gray-200">Baseline</strong>
+                                <p className="text-gray-500 mt-1">Enter your first lab (TSH, weight, dose if any). Model uses population priors heavily.</p>
+                            </div>
+                            <div className="bg-gray-950 rounded-lg p-3 border border-gray-800 text-center">
+                                <div className="text-emerald-400 font-bold text-lg mb-1">②</div>
+                                <strong className="text-gray-200">Follow-Up (6–8 wks)</strong>
+                                <p className="text-gray-500 mt-1">Add your new lab after taking the recommended dose. Model now has 2 data points.</p>
+                            </div>
+                            <div className="bg-gray-950 rounded-lg p-3 border border-gray-800 text-center">
+                                <div className="text-emerald-400 font-bold text-lg mb-1">③</div>
+                                <strong className="text-gray-200">Re-Optimize</strong>
+                                <p className="text-gray-500 mt-1">Run the engine again. Parameters shift toward YOUR pharmacokinetics, away from averages.</p>
+                            </div>
+                            <div className="bg-gray-950 rounded-lg p-3 border border-gray-800 text-center">
+                                <div className="text-emerald-400 font-bold text-lg mb-1">④</div>
+                                <strong className="text-gray-200">Converge</strong>
+                                <p className="text-gray-500 mt-1">After 2–3 cycles the model is well-individualized. Dose adjustments become smaller.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Section 7: Limitations */}
+                    <div className="border border-red-900/50 bg-gray-900 rounded-xl p-6">
+                        <h3 className="text-lg font-semibold text-red-400 mb-3">⚠ Important Limitations</h3>
+                        <ul className="space-y-2 text-xs text-gray-400">
+                            <li>
+                                <strong className="text-gray-300">Not Medical Advice:</strong> This tool is a computational aid, not a substitute for
+                                clinical judgment. All dose changes should be reviewed and approved by your endocrinologist.
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Steady-State Assumption:</strong> The model assumes you have been on a stable dose
+                                for at least 6 weeks before each lab. Labs drawn during dose transitions will produce inaccurate fits.
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Compliance:</strong> The model assumes 100% daily adherence to the prescribed dose.
+                                Missed doses or irregular timing will skew results.
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Drug Interactions:</strong> Medications and supplements that affect T4 absorption
+                                (calcium, iron, PPIs, etc.) are not explicitly modeled. The optimizer may partially compensate via the η parameter,
+                                but significant interactions should be flagged to your physician.
+                            </li>
+                            <li>
+                                <strong className="text-gray-300">Antibodies:</strong> Anti-TPO and Anti-Tg values are stored for clinical reference
+                                but do <strong>not</strong> currently enter the dose calculation.
+                            </li>
+                        </ul>
                     </div>
                 </div>
             )}
