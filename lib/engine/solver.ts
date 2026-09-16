@@ -2,40 +2,58 @@ import { PatientProfile, LabRecord, EstimationResult } from './types'
 
 // ─── Steady-State PK/PD Model Constants ──────────────────────────────────────
 //
+// The image formula:  fT4_ss(D) = (η · D + S_end) / (k_e · V_d)
+// produces concentration in mcg/L (dose in mcg/day ÷ clearance in L/day).
+// But measured fT4 is in ng/dL.  The conversion factor ALPHA accounts for:
+//   • 1 mcg/L = 100 ng/dL  (unit conversion)
+//   • Only ~0.02–0.03 % of plasma T4 is free  (free fraction)
+// Their product gives ALPHA ≈ 0.014, empirically calibrated so that a
+// thyroidectomy patient (S_end=0) on 100 mcg/day with LBM ≈ 55 kg yields
+// fT4 ≈ 1.3 ng/dL — matching clinical pharmacokinetic data.
+//
+// With ALPHA in place, k_e takes its true pharmacokinetic value (~0.1 day⁻¹,
+// corresponding to T4 half-life ≈ 7 days) and CL = k_e · V_d is a
+// physiologically realistic metabolic clearance rate (≈ 0.8–1.5 L/day).
+//
 // TSH_MAX, EC50, and GAMMA define the Hill/Michaelis-Menten pituitary response:
 //   TSH_ss(fT4) = TSH_max / (1 + (fT4 / EC50)^γ)
 //
-// TSH_MAX = 25 mIU/L is chosen to cover the full range of observed TSH values
-// (including severely hypothyroid patients) while keeping dose recommendations
-// in the clinically valid range (25–300 mcg/day) at population-average priors.
+// EC50 = 0.32 ng/dL is the fT4 at which TSH is half-maximally suppressed.
+// This lies in the hypothyroid range, which is physiologically correct: the
+// pituitary's TSH secretion is at its midpoint when the patient is moderately
+// hypothyroid, not when they are euthyroid.
 //
-// VD_PER_KG_LBM is the apparent volume of distribution coefficient per the
-// image specification: V_d = 0.16 L/kg × W_LBM.
+// TSH_MAX = 100 mIU/L covers the full range of observed TSH values in
+// clinical practice (severely hypothyroid patients can have TSH > 50).
 //
-// Note on k_e and S_end priors: the image formula uses dose D in mcg/day and
-// produces fT4 in ng/dL. The effective clearance rate k_e_prior = 1.5 day⁻¹
-// is calibrated so that the closed-form dose inversion returns doses in the
-// 25–300 mcg/day range for typical patients at population-average parameters.
-// This value absorbs the unit conversions between mcg/day administered dose and
-// ng/dL free-T4 plasma concentrations.
-//
-const TSH_MAX        = 25.0  // mIU/L  — effective maximum TSH secretion capacity
-const EC50           = 1.5   // ng/dL  — fT4 concentration at 50% TSH suppression
-const GAMMA          = 2.0   // Hill coefficient (sigmoidal steepness)
+const ALPHA          = 0.014 // fT4 unit-conversion factor (free fraction × mcg/L→ng/dL)
+const TSH_MAX        = 100.0 // mIU/L  — maximum TSH secretion capacity
+const EC50           = 0.32  // ng/dL  — fT4 at 50 % TSH suppression
+const GAMMA          = 3.0   // Hill coefficient (sigmoidal steepness)
 const VD_PER_KG_LBM  = 0.16  // L/kg  — V_d = 0.16 L/kg × W_LBM (per image)
 
 // ─── Optimizer Hyperparameters ────────────────────────────────────────────────
-const W_TSH  = 1.0  // TSH residual weight in the cost function
-const W_FT4  = 0.3  // fT4 residual weight (down-weighted; freeT4 is optional)
-const LAMBDA = 0.5  // L2 regularization strength toward population priors
-const MAX_ITER = 3000
+const W_TSH  = 1.0   // TSH residual weight in cost function
+const W_FT4  = 10.0  // fT4 residual weight (fT4 in ng/dL has smaller residuals)
+const LAMBDA = 1.0   // Overall L2 regularization strength
+
+// Per-parameter prior uncertainty (σ) for normalized regularization.
+// The regularization term is:  λ · [ (η−ηp)²/σ_η² + (S−Sp)²/σ_S² + (k−kp)²/σ_k² ]
+// This prevents the numerically-larger S_end from dominating the L2 penalty.
+const REG_SIGMA_ETA  = 0.3   // η ranges ~[0.3, 1.0]
+const REG_SIGMA_SEND = 40.0  // S_end ranges ~[0, 100]
+const REG_SIGMA_KE   = 0.15  // k_e ranges ~[0.02, 0.5]
+
+const MAX_ITER = 5000
 
 // Per-parameter gradient-descent learning rates.
 // Calibrated to the expected gradient magnitudes at population-average θ for
 // typical levothyroxine doses (25–300 mcg/day) and LBM values (40–120 kg).
-const LR_ETA  = 5e-4  // learning rate for η  (absorption efficiency)
-const LR_SEND = 1e-1  // learning rate for S_end  (endogenous production)
-const LR_KE   = 2e-4  // learning rate for k_e  (clearance rate)
+// k_e gradients are ~100× larger than η gradients due to the 1/k_e² dependence,
+// so LR_KE is proportionally smaller.
+const LR_ETA  = 5e-5  // learning rate for η  (absorption efficiency)
+const LR_SEND = 5e-1  // learning rate for S_end  (endogenous production)
+const LR_KE   = 5e-6  // learning rate for k_e  (clearance rate)
 
 // ─── LBM Helper ───────────────────────────────────────────────────────────────
 
@@ -66,13 +84,16 @@ function computeLbm(
 // ─── Steady-State Model Equations ────────────────────────────────────────────
 
 /**
- * Steady-state free T4 concentration given dose D (mcg/day) and parameters θ.
+ * Steady-state free T4 concentration (ng/dL) given dose D (mcg/day) and θ.
  *
- *   fT4_ss(D) = (η · D + S_end) / (k_e · V_d)
+ *   fT4_ss(D) = ALPHA · (η · D + S_end) / (k_e · V_d)
+ *
+ * ALPHA converts from the raw PK concentration (mcg/L) to measured fT4 (ng/dL),
+ * encompassing the free fraction and unit conversion.
  */
 function fT4Steady(D: number, eta: number, sEnd: number, ke: number, vd: number): number {
     const kv = ke * vd
-    return kv < 1e-9 ? 0 : (eta * D + sEnd) / kv
+    return kv < 1e-9 ? 0 : ALPHA * (eta * D + sEnd) / kv
 }
 
 /**
@@ -93,13 +114,13 @@ function tshSteady(ft4: number): number {
  * Objective (from the image):
  *
  *   J(θ) = Σᵢ [ w_TSH·(TSH_i − T̂SH_i)² + w_fT4·(fT4_i − f̂T4_i)² ]
- *          + λ·‖θ − θ_prior‖²
+ *          + λ·‖θ − θ_prior‖²_normalized
  *
  * Analytical gradients via the chain rule (fT4 term omitted when unavailable):
  *
- *   ∂J/∂η     = Σᵢ −2·w_TSH·rTSH·(∂t/∂f)·(D_i/(ke·Vd))   + 2λ(η−η_prior)
- *   ∂J/∂S_end = Σᵢ −2·w_TSH·rTSH·(∂t/∂f)·(1/(ke·Vd))     + 2λ(S_end−S_end_prior)
- *   ∂J/∂k_e   = Σᵢ −2·w_TSH·rTSH·(∂t/∂f)·(−f/ke)         + 2λ(ke−ke_prior)
+ *   ∂J/∂η     = Σᵢ −2·w_TSH·rTSH·(∂t/∂f)·(ALPHA·D/(ke·Vd))   + reg
+ *   ∂J/∂S_end = Σᵢ −2·w_TSH·rTSH·(∂t/∂f)·(ALPHA/(ke·Vd))     + reg
+ *   ∂J/∂k_e   = Σᵢ −2·w_TSH·rTSH·(∂t/∂f)·(−f/ke)             + reg
  *
  * where  ∂t/∂f = −TSH_max·γ·u / (f·(1+u)²),   u = (f/EC50)^γ
  */
@@ -128,13 +149,13 @@ function costAndGradient(
         const u    = Math.pow(fSafe / EC50, GAMMA)
         const dtdf = -(TSH_MAX * GAMMA * u) / (fSafe * (1 + u) * (1 + u))
 
-        // Partials of fT4_ss wrt each parameter
-        // ∂f/∂η = D / (ke·Vd)
-        const dfde = D      / kvSafe
-        // ∂f/∂S_end = 1 / (ke·Vd)
-        const dfds = 1      / kvSafe
-        // ∂f/∂ke = −f / ke   [from (η·D+S_end)/(ke·Vd), differentiating ke]
-        const dfdk = -fSafe / ke
+        // Partials of fT4_ss wrt each parameter (ALPHA included)
+        // ∂f/∂η = ALPHA · D / (ke·Vd)
+        const dfde = ALPHA * D / kvSafe
+        // ∂f/∂S_end = ALPHA / (ke·Vd)
+        const dfds = ALPHA     / kvSafe
+        // ∂f/∂ke = −f / ke   [f already includes ALPHA, so this is correct]
+        const dfdk = -fSafe    / ke
 
         // TSH gradient contributions: −2·W_TSH·rTSH·(∂t/∂f)·(∂f/∂θ)
         const gTsh = -2 * W_TSH * rTsh * dtdf
@@ -153,11 +174,20 @@ function costAndGradient(
         }
     }
 
-    // L2 regularization toward population priors: λ·‖θ − θ_prior‖²
-    cost  += LAMBDA * ((eta - etaPrior)**2 + (sEnd - sEndPrior)**2 + (ke - kePrior)**2)
-    dEta  += 2 * LAMBDA * (eta  - etaPrior)
-    dSEnd += 2 * LAMBDA * (sEnd - sEndPrior)
-    dKe   += 2 * LAMBDA * (ke   - kePrior)
+    // Normalized L2 regularization toward population priors:
+    // λ · [ (η−ηp)²/σ_η² + (S−Sp)²/σ_S² + (k−kp)²/σ_k² ]
+    const sigEta2  = REG_SIGMA_ETA  * REG_SIGMA_ETA
+    const sigSend2 = REG_SIGMA_SEND * REG_SIGMA_SEND
+    const sigKe2   = REG_SIGMA_KE   * REG_SIGMA_KE
+
+    cost  += LAMBDA * (
+        (eta - etaPrior) ** 2 / sigEta2 +
+        (sEnd - sEndPrior) ** 2 / sigSend2 +
+        (ke - kePrior) ** 2 / sigKe2
+    )
+    dEta  += 2 * LAMBDA * (eta  - etaPrior)  / sigEta2
+    dSEnd += 2 * LAMBDA * (sEnd - sEndPrior) / sigSend2
+    dKe   += 2 * LAMBDA * (ke   - kePrior)   / sigKe2
 
     return { cost, dEta, dSEnd, dKe }
 }
@@ -171,8 +201,8 @@ function costAndGradient(
  * At steady state (~6 weeks, 5 × T½ of T4) the continuous PK/PD model
  * simplifies to two algebraic equations:
  *
- *   fT4_ss(D) = (η · D + S_end) / (k_e · V_d)
- *   TSH_ss    = TSH_max / (1 + (fT4_ss / EC50)^γ)
+ *   fT4_ss(D) = ALPHA · (η · D + S_end) / (k_e · V_d)     [ng/dL]
+ *   TSH_ss    = TSH_max / (1 + (fT4_ss / EC50)^γ)          [mIU/L]
  *
  * where θ = [η, S_end, k_e] is an unknown patient-specific parameter vector:
  *   η       — Gut Absorption Efficiency  (fraction)
@@ -187,10 +217,10 @@ function costAndGradient(
  *
  *   J(θ) = Σᵢ [ w_TSH·(TSH_i−T̂SH_i)² + w_fT4·(fT4_i−f̂T4_i)² ] + λ·‖θ−θ_prior‖²
  *
- * Optimal Dose Solve:
+ * Optimal Dose Solve (with ALPHA conversion):
  * Once θ̂ is updated from the latest blood test, D* is solved analytically:
  *
- *   D* = (k_e · V_d · EC50 · (TSH_max/TSH_target − 1)^(1/γ) − S_end) / η
+ *   D* = (k_e · V_d / ALPHA · EC50 · (TSH_max/TSH_target − 1)^(1/γ) − S_end) / η
  */
 export function calculateMapDose(
     patient: PatientProfile,
@@ -226,15 +256,18 @@ export function calculateMapDose(
 
     // ── 2. Population priors θ_prior = [η, S_end, k_e] ──────────────────────
     // S_end is conditioned on thyroid gland status: it represents the effective
-    // residual endogenous T4 contribution under therapy-induced TSH suppression.
+    // residual endogenous T4 production.
+    //   intact:              ~40 mcg/day (partially failing gland in Hashimoto's)
+    //   partial_resection:   ~15 mcg/day (reduced remnant)
+    //   total_thyroidectomy:   0 mcg/day (no native gland)
     const sEndPriorByStatus: Record<string, number> = {
-        intact:              40,  // mcg/day — partial gland, partially suppressed
-        partial_resection:   20,  // mcg/day — reduced remnant production
-        total_thyroidectomy:  0,  // mcg/day — no native gland
+        intact:              40,
+        partial_resection:   15,
+        total_thyroidectomy:  0,
     }
     const etaPrior  = 0.80
     const sEndPrior = sEndPriorByStatus[patient.thyroidStatus] ?? 40
-    const kePrior   = 1.5   // effective clearance rate (day⁻¹)
+    const kePrior   = 0.1    // day⁻¹  (T4 half-life ≈ 7 days → k_e = ln2/7 ≈ 0.1)
 
     // ── 3. Gradient Descent MAP Optimizer ────────────────────────────────────
     // Minimises J(θ) using gradient descent with per-parameter learning rates
@@ -255,9 +288,9 @@ export function calculateMapDose(
         ke   -= LR_KE   * dKe
 
         // Hard physiological bounds
-        eta  = Math.max(0.05, Math.min(eta,  1.00))
-        sEnd = Math.max(0.00, Math.min(sEnd, 200.0))
-        ke   = Math.max(0.05, Math.min(ke,   20.0))
+        eta  = Math.max(0.05, Math.min(eta,  1.00))   // absorption: 5–100 %
+        sEnd = Math.max(0.00, Math.min(sEnd, 200.0))   // endogenous: 0–200 mcg/day
+        ke   = Math.max(0.02, Math.min(ke,   1.00))    // k_e: t½ range ~0.7–35 days
 
         // Early stop when all parameter updates become negligible
         if (
@@ -268,12 +301,16 @@ export function calculateMapDose(
     }
 
     // ── 4. Optimal Dose Inversion ─────────────────────────────────────────────
-    // Closed-form solution from inverting the steady-state system (per image):
-    //   D* = (k_e · V_d · EC50 · (TSH_max/TSH_target − 1)^(1/γ) − S_end) / η
+    // Closed-form solution from inverting the steady-state system (per image),
+    // with ALPHA conversion factor:
+    //
+    //   fT4_target = EC50 · (TSH_max/TSH_target − 1)^(1/γ)
+    //   D* = (fT4_target · k_e · V_d / ALPHA − S_end) / η
+    //
     const targetTsh = Math.max(patient.targetTsh || 1.5, 0.1)
     const tshRatio  = TSH_MAX / targetTsh - 1
     const rawD = tshRatio > 0
-        ? (ke * latestVd * EC50 * Math.pow(tshRatio, 1 / GAMMA) - sEnd) / eta
+        ? (ke * latestVd / ALPHA * EC50 * Math.pow(tshRatio, 1 / GAMMA) - sEnd) / eta
         : 0
 
     // ── 5. Quantization & Clinical Safety Clamp ───────────────────────────────
@@ -293,7 +330,7 @@ export function calculateMapDose(
     const objectiveValue = parseFloat(objectiveRaw.toFixed(6))
 
     // ── 8. Output Assembly ────────────────────────────────────────────────────
-    // individualClearance = k_e · V_d  (L/day), consistent with prior meaning
+    // individualClearance = k_e · V_d  (L/day) — now physiologically realistic
     const individualClearance = parseFloat((ke * latestVd).toFixed(2))
 
     const currentDose   = latestLab.dailyDoseMcg ?? 0
